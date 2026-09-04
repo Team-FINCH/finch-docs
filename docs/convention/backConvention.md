@@ -51,7 +51,7 @@ com.finch
 │   └── util/
 └── domain/
     ├── auth/                   # 카카오 로그인, 토큰 회전, 내 정보
-    ├── account/                # 투자 회차 = 계좌, 리셋
+    ├── account/                # 계좌, 예수금 스냅샷
     ├── deposit/                # 모의 충전
     ├── ledger/                 # 원장 기록 + 거래 내역 조회
     ├── stock/                  # 종목 마스터, 검색, 일봉
@@ -70,7 +70,7 @@ com.finch
 | 도메인 | 소유 테이블 | 담당 엔드포인트 (apiSpec 장) |
 |---|---|---|
 | `auth` | `users` | 2장 전체 (`/auth/**`, `/users/me`) |
-| `account` | `investment_round` | 3장 (`/account`, `/account/reset`, `/rounds`) |
+| `account` | `account` | 3장 (`/account`) |
 | `deposit` | `deposit` | 4장 (`/deposits`, `/deposits/limit`) |
 | `ledger` | `ledger_entry` | 8.2 (`/transactions`) |
 | `stock` | `stock`, `daily_candle` | 5.1~5.3 (검색·상세·캔들) |
@@ -82,7 +82,9 @@ com.finch
 | `ai` | 없음 | 9장(`/internal/v1/**`), 10장(`/api/v1/ai/**`) |
 
 Refresh Token과 멱등성 키는 Redis에 있고 테이블이 없다 (ERD §1.4). Refresh Token은 `global/security`,
-멱등성 키는 `global/config`의 인터셉터가 다룬다 — 특정 도메인의 관심사가 아니다.
+멱등성 키는 `global/idempotency`의 **필터**가 다룬다 — 특정 도메인의 관심사가 아니다.
+(인터셉터로 적어 두었으나 구현에서 필터로 바뀌었다. 최초 응답을 그대로 재생하려면 응답 본문을
+감싸야 하고 그것은 필터에서만 된다 — `IdempotencyFilter` 주석.)
 
 #### 2.3 도메인 내부 계층
 
@@ -118,9 +120,21 @@ domain/order/
 
 - `order`는 `account`(예수금 락) · `ledger`(원장 기록) · `portfolio`(보유 갱신) · `price`(최신가) · `stock`(거래정지)을 참조한다
 - `deposit`은 `account`와 `ledger`를 참조한다
-- `account`의 리셋은 `ledger`를 참조한다
+- `account`는 계좌 개설 시 `ledger`를 참조한다 (`INITIAL_GRANT` 기록)
 - `ai`는 `portfolio`와 `order`를 읽어 내부 API로 노출한다 (읽기 전용, 원장을 쓰지 않는다 — featureSpec 10.1)
 - `ledger`·`stock`·`price`는 다른 도메인을 참조하지 않는다
+
+**같은 층 예외 — `auth` → `account` (가입 시 계좌 개설).** 명시한 이 한 쌍만 허용한다.
+
+erd §3.1이 `users`·`account`·`ledger_entry` INSERT를 **한 트랜잭션**으로 요구하는데, 두 테이블의
+소유 도메인이 같은 2층이라 규칙대로는 묶을 방법이 없다. 규칙 2의 근거는 "순환을 만들 수 있어서"인데
+`account`는 `auth`를 참조하지 않으므로 이 방향에는 순환이 없다.
+
+- 참조는 **`auth` → `account` 한 방향만**이다. `account`가 `auth`를 참조하게 되는 순간 순환이 되므로
+  그때는 이 예외를 없애고 계층을 다시 그어야 한다.
+- 호출 지점은 `UserRegistrationService` 하나다. 늘리지 않는다.
+- ApplicationEvent로 끊는 방법도 검토했으나 기각했다 — `account`가 `auth`의 이벤트 타입을 import하므로
+  같은 층 의존은 그대로 남고, 가입 코드만 봐서는 계좌가 언제 생기는지 보이지 않게 된다.
 
 **규칙 3 — 참조는 다른 도메인의 Service를 통해서만 한다.** 다른 도메인의 Entity·Repository를 import
 하지 않는다. 데이터가 필요하면 그 도메인이 노출한 DTO를 받는다.
@@ -131,11 +145,12 @@ domain/order/
 
 #### 2.5 원장 기록의 단일 경로
 
-`ledger_entry`에 6종을 기록하는 주체를 고정한다 (backConvention 7장의 "기록 시점과 책임 서비스").
+`ledger_entry`에 4종을 기록하는 주체를 고정한다 (backConvention 7장의 "기록 시점과 책임 서비스").
+`ROUND_OPEN`·`ROUND_CLOSE`는 투자 회차와 함께 사라졌다 (apiSpec v0.7, 이슈 #27).
 
 | `type` | 기록 주체 |
 |---|---|
-| `ROUND_OPEN` · `INITIAL_GRANT` · `ROUND_CLOSE` | `account` |
+| `INITIAL_GRANT` | `account` (계좌 개설 시 1회) |
 | `DEPOSIT` | `deposit` |
 | `BUY` · `SELL` | `order` |
 
@@ -194,9 +209,8 @@ domain/order/
 
 ### 7. 도메인 규약
 
-- 원장 유형 6종(`INITIAL_GRANT` ~ `ROUND_CLOSE`)의 기록 시점과 책임 서비스
+- 원장 유형 4종(`INITIAL_GRANT`·`DEPOSIT`·`BUY`·`SELL`)의 기록 시점과 책임 서비스
 - 주문 처리 순서(apiSpec.md 7.2의 5단계)를 코드 어디에 두는지 — 수량 임의 축소 체결 금지
-- 회차 규칙: 쓰기는 활성 회차만, `ROUND_READ_ONLY` 판정 위치
 - 계좌 요약·평가손익은 원장에서 계산한 서버 값 — 계산식의 단일 소스 위치
 
 ### 8. 외부 연동 규약
