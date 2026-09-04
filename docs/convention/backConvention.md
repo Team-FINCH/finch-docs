@@ -34,7 +34,7 @@
 
 ### 2. 패키지 구조
 
-기준: [ERD v1.0](../erd/erd.md)의 11개 테이블과 [apiSpec v0.2](../api/apiSpec.md)의 엔드포인트 묶음.
+기준: [ERD v1.2](../erd/erd.md)의 13개 테이블과 [apiSpec v0.8](../api/apiSpec.md)의 엔드포인트 묶음.
 
 #### 2.1 전체 트리
 
@@ -52,7 +52,8 @@ com.finch
 └── domain/
     ├── auth/                   # 카카오 로그인, 토큰 회전, 내 정보
     ├── account/                # 계좌, 예수금 스냅샷
-    ├── deposit/                # 모의 충전
+    ├── deposit/                # 모의 충전 (결제 절차 + 확정)
+    ├── withdrawal/             # 예수금 출금
     ├── ledger/                 # 원장 기록 + 거래 내역 조회
     ├── stock/                  # 종목 마스터, 검색, 일봉
     ├── price/                  # 시세 캐시 읽기, STOMP 발행, KIS 수집
@@ -71,7 +72,8 @@ com.finch
 |---|---|---|
 | `auth` | `users` | 2장 전체 (`/auth/**`, `/users/me`) |
 | `account` | `account` | 3장 (`/account`) |
-| `deposit` | `deposit` | 4장 (`/deposits`, `/deposits/limit`) |
+| `deposit` | `deposit`, `payment` | 4.1~4.4 (`/deposits/**`) |
+| `withdrawal` | `withdrawal` | 4.5 (`/withdrawals`) |
 | `ledger` | `ledger_entry` | 8.2 (`/transactions`) |
 | `stock` | `stock`, `daily_candle` | 5.1~5.3 (검색·상세·캔들) |
 | `price` | 없음 (Redis) | 5.4~5.6 (`/price`, `/prices`, STOMP `/ws`) |
@@ -114,12 +116,14 @@ domain/order/
 1층 (피참조 전용)   stock      price      ledger
 2층                 auth       account
 3층                 portfolio
-4층                 deposit    order      watchlist    recent
+4층                 deposit    withdrawal    order    watchlist    recent
 5층                 ai
 ```
 
 - `order`는 `account`(예수금 락) · `ledger`(원장 기록) · `portfolio`(보유 갱신) · `price`(최신가) · `stock`(거래정지)을 참조한다
 - `deposit`은 `account`와 `ledger`를 참조한다
+- `withdrawal`은 `account`와 `ledger`를 참조한다. **`deposit`을 참조하지 않는다** — 같은 4층이고,
+  참조할 일도 없다(출금은 충전 건을 되돌리는 것이 아니라 잔고에서 빼는 별개 사건이다)
 - `account`는 계좌 개설 시 `ledger`를 참조한다 (`INITIAL_GRANT` 기록)
 - `ai`는 `portfolio`와 `order`를 읽어 내부 API로 노출한다 (읽기 전용, 원장을 쓰지 않는다 — featureSpec 10.1)
 - `ledger`·`stock`·`price`는 다른 도메인을 참조하지 않는다
@@ -145,13 +149,14 @@ erd §3.1이 `users`·`account`·`ledger_entry` INSERT를 **한 트랜잭션**�
 
 #### 2.5 원장 기록의 단일 경로
 
-`ledger_entry`에 4종을 기록하는 주체를 고정한다 (backConvention 7장의 "기록 시점과 책임 서비스").
+`ledger_entry`에 5종을 기록하는 주체를 고정한다 (backConvention 7장의 "기록 시점과 책임 서비스").
 `ROUND_OPEN`·`ROUND_CLOSE`는 투자 회차와 함께 사라졌다 (apiSpec v0.7, 이슈 #27).
 
 | `type` | 기록 주체 |
 |---|---|
 | `INITIAL_GRANT` | `account` (계좌 개설 시 1회. **지급액이 0이면 기록하지 않는다** — 현재 정책이 0이다) |
-| `DEPOSIT` | `deposit` |
+| `DEPOSIT` | `deposit` (충전 확정 트랜잭션에서만. 준비·승인 단계는 원장을 건드리지 않는다) |
+| `WITHDRAWAL` | `withdrawal` |
 | `BUY` · `SELL` | `order` |
 
 `ledger`는 기록용 서비스 하나만 노출하고 스스로 원장을 만들지 않는다. **`LedgerRepository`를 `ledger`
@@ -209,7 +214,7 @@ erd §3.1이 `users`·`account`·`ledger_entry` INSERT를 **한 트랜잭션**�
 
 ### 7. 도메인 규약
 
-- 원장 유형 4종(`INITIAL_GRANT`·`DEPOSIT`·`BUY`·`SELL`)의 기록 시점과 책임 서비스
+- 원장 유형 5종(`INITIAL_GRANT`·`DEPOSIT`·`WITHDRAWAL`·`BUY`·`SELL`)의 기록 시점과 책임 서비스
 - 주문 처리 순서(apiSpec.md 7.2의 5단계)를 코드 어디에 두는지 — 수량 임의 축소 체결 금지
 - 계좌 요약·평가손익은 원장에서 계산한 서버 값 — 계산식의 단일 소스 위치
 
