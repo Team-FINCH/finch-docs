@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.7 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-03
+- 문서 버전: v0.8 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-04
 - 기준 문서: [기능 명세서 v2.2](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -36,6 +36,17 @@
   - v0.7.1 — `409 IDEMPOTENCY_IN_PROGRESS` 응답에 `Retry-After` 헤더 추가(§1.4). **기존 계약을 깨지 않는다** —
     헤더가 늘어난 것뿐이고, 읽지 않는 클라이언트는 그대로 동작한다. 프론트 리뷰 요청으로 추가했다
     (재시도 간격을 클라이언트가 정하고 있었다)
+  - v0.8 — **충전을 2단계로 교체하고 출금을 신설한다. 기존 계약을 깨는 변경이다.**
+    ① **§4 충전 전면 교체** — `POST /deposits` 한 방 호출을 삭제하고 `ready`(§4.2) → 승인(§4.3) →
+    `confirm`(§4.4) 으로 나눈다. 실제 카카오페이를 쓰기로 하면서 "브라우저가 PG 로 떠났다가 돌아오는"
+    흐름이 생겼기 때문이다. `paymentMethod` 열거값이 `VIRTUAL_CARD`·`VIRTUAL_TRANSFER` →
+    `KAKAOPAY`·`TRANSFER` 로 바뀐다. 충전 에러 코드 6종 신설.
+    ② **§4.5 출금 신설** — `POST /withdrawals`. 에러 코드 2종 신설. §8.2 필터에 `WITHDRAWAL` 추가.
+    ③ **§1.4 멱등성 기준 분리** — 주문·출금은 `Idempotency-Key` 헤더, 충전 확정은 PG 가 발급한
+    `paymentKey`. 충전에서 헤더가 빠진다.
+    ④ **`ORDER_PRICE_CHANGED` 폐기** (구 13장 7번 확정) — 예수금 부족은 전부 `ORDER_INSUFFICIENT_CASH`.
+    ⑤ **AI 중계 401·403 → 502 `AI_UPSTREAM_UNAVAILABLE`, 429 → 503 `AI_UPSTREAM_RATE_LIMITED`(신설)**
+    로 재포장 (구 13장 6번 확정). 나머지 상태는 그대로 통과.
   - v0.7.2 — **초기 예수금 지급 제거.** 실제 증권 서비스가 가입만으로 돈을 주지 않으므로 계좌는 0원으로
     열리고 사용자는 충전부터 한다 (명세 2.2). **프론트 구현 전제가 바뀐다** — 가입 직후 잔고가 0이고
     매매 내역이 빈 목록이며, `INITIAL_GRANT` 원장 행이 더는 만들어지지 않는다. §2.1 · §8.2 수정.
@@ -137,7 +148,15 @@ HTTP/1.1 200 OK
 
 ### 1.4 멱등성 (명세 11장)
 
-**충전과 주문**은 멱등성 키가 필수다. **키는 클라이언트가 UUID v4로 생성한다** — 같은 버튼 클릭의 재시도는 같은 키, 새 클릭은 새 키.
+**주문과 출금**은 멱등성 키가 필수다. **키는 클라이언트가 UUID v4로 생성한다** — 같은 버튼 클릭의 재시도는 같은 키, 새 클릭은 새 키.
+
+**충전 확정(`POST /deposits/confirm`)은 이 헤더를 쓰지 않는다.** 멱등의 기준이 **PG 가 발급한 `paymentKey`** 이고, 같은 키로 다시 오면 `200` 과 최초 응답이 나간다 (§4.4). 클라이언트가 만든 UUID 로는 판정할 수 없다 — 결제창을 거쳐 돌아온 요청이라 최초 호출과 다른 화면·다른 세션일 수 있다.
+
+| 엔드포인트 | 멱등 기준 |
+|---|---|
+| `POST /orders` | `Idempotency-Key` 헤더 (필수) |
+| `POST /withdrawals` | `Idempotency-Key` 헤더 (필수) |
+| `POST /deposits/confirm` | `paymentKey` (헤더 없음) |
 
 ```http
 Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
@@ -329,7 +348,30 @@ GET /api/v1/account
 
 ---
 
-## 4. 모의 결제 (충전) API — 명세 3장
+## 4. 모의 결제 (충전 · 출금) API — 명세 3장
+
+충전은 **결제 준비(ready) → 결제창 → 승인 → 확정(confirm)** 4단계다. v0.7 까지의 `POST /deposits` 한
+방 호출을 대체한다.
+
+바뀐 이유 — 실제 PG 를 쓰기로 했다. 카카오페이 결제창은 **사용자의 브라우저가 카카오로 떠났다가
+돌아오는** 흐름이고, 그동안 우리 서버는 요청을 붙잡고 있을 수 없다. 그래서 "결제를 준비하고 URL 을
+내려주는" 호출과 "돌아온 뒤 원장에 반영하는" 호출이 나뉜다.
+
+```
+[ready]  POST /deposits/ready        → checkoutUrl
+   │
+   ├─ KAKAOPAY   사용자가 checkoutUrl 로 이동 → 카카오 결제 → 우리 서버로 리다이렉트
+   │             GET /deposits/kakao/approval  (무인증, 브라우저가 부른다)
+   │                 → 302 프론트 성공 URL ?paymentId&paymentKey&amount
+   │
+   └─ TRANSFER   프론트가 자체 모의 이체 화면을 띄운다
+                 POST /deposits/{paymentId}/mock-approve → paymentKey
+   │
+[confirm] POST /deposits/confirm {paymentId, paymentKey, amount}  → 예수금 반영
+```
+
+**결제 서버를 따로 두지 않는다.** `domain/deposit` 안에 `PaymentGateway` 인터페이스로 경계만 긋고,
+카카오페이 구현과 모의 이체 구현이 그 뒤에 선다. 분리가 필요해지면 그 인터페이스가 잘리는 선이다.
 
 ### 4.1 충전 한도 조회
 
@@ -350,42 +392,178 @@ GET /api/v1/deposits/limit
 **누적 한도의 기준은 계정 전체다** (명세 1.1). 회차가 없어지면서 한도를 되돌릴 경로도 없어졌다.
 v0.6 의 `roundCumulativeLimit`·`roundDepositedAmount` 가 `cumulativeLimit`·`depositedAmount` 로 바뀌었다.
 
-### 4.2 충전
+### 4.2 결제 준비 (ready)
 
 ```
-POST /api/v1/deposits
-Idempotency-Key: {UUID}   ← 필수
+POST /api/v1/deposits/ready
 ```
 
 **Request**
 ```json
 {
   "amount": 1000000,
-  "paymentMethod": "VIRTUAL_CARD"
+  "paymentMethod": "KAKAOPAY"
 }
 ```
 
-`paymentMethod`: `VIRTUAL_CARD` | `VIRTUAL_TRANSFER` (시뮬레이션용 선택지)
+`paymentMethod`: `KAKAOPAY` | `TRANSFER`
 
 **Response `201 Created`**
 ```json
 {
+  "paymentId": 77,
+  "paymentMethod": "KAKAOPAY",
+  "amount": 1000000,
+  "checkoutUrl": "https://online-pay.kakao.com/mockup/v1/...",
+  "expiresAt": "2026-08-20T14:46:02+09:00"
+}
+```
+
+- `checkoutUrl` — `KAKAOPAY` 는 카카오가 준 결제창 주소, `TRANSFER` 는 프론트의 모의 이체 화면 주소다.
+  프론트는 수단을 구분하지 않고 이 URL 로 보내면 된다.
+- `expiresAt` 이 지나면 그 건은 만료된다(서버가 `FAILED` 로 정리한다). 기본 15분.
+
+**판정 순서** — 위에서 걸리면 아래는 보지 않는다.
+
+| # | 조건 | 에러 | 상태 |
+|---|---|---|:---:|
+| 1 | `paymentMethod` 가 열거값 밖 | `INVALID_REQUEST` | 400 |
+| 2 | 금액 0원 이하 | `DEPOSIT_AMOUNT_INVALID` | 400 |
+| 3 | 1회 1,000만 원 초과 | `DEPOSIT_PER_REQUEST_LIMIT_EXCEEDED` | 409 |
+| 4 | 계정 누적 1억 원 초과 | `DEPOSIT_LIMIT_EXCEEDED` (`detail.remainingAmount`) | 409 |
+| 5 | PG 가 결제 준비를 거절·응답 없음 | `DEPOSIT_PG_UNAVAILABLE` | 502 |
+
+> 누적 한도는 **여기서 미리 한 번, `confirm` 에서 다시 한 번** 본다. 여기 검사는 사용자 편의다 —
+> 결제창까지 갔다가 마지막에 막히는 것보다 낫다. **진실은 `confirm` 의 판정**이고, 그 사이에 다른 충전이
+> 끼어들면 여기서 통과한 건도 `confirm` 에서 막힐 수 있다.
+
+### 4.3 결제 승인
+
+수단에 따라 둘 중 하나가 불린다. **둘 다 예수금을 건드리지 않는다** — 원장 반영은 `confirm` 뿐이다.
+
+#### 4.3.1 카카오페이 승인 콜백 (무인증)
+
+```
+GET /api/v1/deposits/kakao/approval?paymentId={id}&pg_token={token}
+```
+
+**이 경로는 인증이 없다.** 카카오가 사용자의 브라우저를 이 주소로 리다이렉트하는데, 그 요청에는
+`Authorization` 헤더를 붙일 방법이 없다. 프론트가 부르는 API 가 아니다.
+
+- 성공 → `302` 프론트 성공 URL `?paymentId={id}&paymentKey={key}&amount={amount}`
+- 실패 → `302` 프론트 실패 URL `?paymentId={id}&code={에러코드}`
+
+두 URL 은 서버 설정값이다. **응답이 302 뿐이라 본문 에러 형식(§1.3)을 쓰지 않는다.**
+
+> **무인증인데 왜 안전한가** — 이 호출이 하는 일은 결제 건을 `APPROVED` 로 표시하는 것뿐이고
+> **돈은 움직이지 않는다.** 위조하려면 카카오가 발급한 `pg_token` 이 필요한데 그 검증은 카카오가 한다.
+> 남의 `paymentId` 를 넣으면 실패 URL 로 보낸다 — 404 를 주지 않는 이유는 그것 자체가
+> "그 번호는 존재한다"는 정보이기 때문이다.
+
+#### 4.3.2 모의 이체 승인
+
+```
+POST /api/v1/deposits/{paymentId}/mock-approve
+```
+
+**Request** (선택)
+```json
+{ "scenario": "SUCCESS" }
+```
+
+`scenario`: `SUCCESS`(기본) | `INSUFFICIENT_BALANCE` | `LIMIT_EXCEEDED` | `TIMEOUT` — 실패 흐름을
+시연·테스트하기 위한 값이다.
+
+**Response `200 OK`**
+```json
+{ "paymentId": 77, "paymentKey": "mock_pk_9f2c...", "amount": 1000000 }
+```
+
+| 에러 | 상태 | 조건 |
+|---|---|---|
+| `DEPOSIT_NOT_FOUND` | 404 | 없는 `paymentId` 이거나 **내 것이 아님** |
+| `DEPOSIT_INVALID_STATE` | 409 | `KAKAOPAY` 건에 호출. 이 API 는 `TRANSFER` 전용이다 |
+| `DEPOSIT_PAYMENT_FAILED` | 409 | `scenario` 가 실패값. 그 건은 `FAILED` 로 굳는다 |
+
+### 4.4 충전 확정 (confirm)
+
+```
+POST /api/v1/deposits/confirm
+```
+
+**Request**
+```json
+{ "paymentId": 77, "paymentKey": "mock_pk_9f2c...", "amount": 1000000 }
+```
+
+**Response `201 Created`** — v0.7 의 `POST /deposits` 응답과 같은 모양이다.
+```json
+{
   "depositId": 55,
   "amount": 1000000,
-  "paymentMethod": "VIRTUAL_CARD",
+  "paymentMethod": "KAKAOPAY",
   "cashBalanceAfter": 2250000,
   "depositedAt": "2026-08-20T14:31:02+09:00"
 }
 ```
 
-| 에러 | 상태 | 조건 |
-|---|---|---|
-| `DEPOSIT_AMOUNT_INVALID` | 400 | 0원 이하 |
-| `DEPOSIT_PER_REQUEST_LIMIT_EXCEEDED` | 409 | 1회 1,000만 원 초과 |
-| `DEPOSIT_LIMIT_EXCEEDED` | 409 | 계정 누적 1억 원 초과. `detail.remainingAmount` 포함 |
-| `IDEMPOTENCY_KEY_REQUIRED` | 400 | 헤더 누락 |
+**같은 `paymentKey` 로 다시 보내면 `200 OK` 와 함께 최초와 같은 본문이 나간다.** 예수금은 한 번만
+늘어난다. 새로고침·네트워크 재시도로 이 호출이 두 번 도착하는 것이 정상 경로다.
+
+**판정 순서**
+
+| # | 조건 | 에러 | 상태 |
+|---|---|---|:---:|
+| 1 | 없는 `paymentId`/`paymentKey`, 내 것이 아님 | `DEPOSIT_NOT_FOUND` | 404 |
+| 2 | 아직 승인 전(`READY`) | `DEPOSIT_NOT_APPROVED` | 409 |
+| 3 | 실패로 굳은 건(`FAILED`) | `DEPOSIT_PAYMENT_FAILED` | 409 |
+| 4 | 금액이 준비 시점과 다름 | `DEPOSIT_AMOUNT_MISMATCH` (건은 `FAILED`) | 400 |
+| 5 | 계정 누적 1억 원 초과 | `DEPOSIT_LIMIT_EXCEEDED` (건은 `FAILED`) | 409 |
+| — | 통과 | 원장·예수금 반영 | 201 |
+
+> **`Idempotency-Key` 헤더를 쓰지 않는다** (§1.4). 멱등의 기준이 **PG 가 발급한 `paymentKey`** 다.
+> 클라이언트가 만든 UUID 로는 "같은 결제인가"를 판정할 수 없다 — 결제창을 거쳐 돌아온 요청이라
+> 최초 호출과 다른 화면·다른 세션일 수 있기 때문이다.
 
 > **충전 취소 API는 제공하지 않는다.** (명세 1.1, 3.2)
+
+### 4.5 출금
+
+```
+POST /api/v1/withdrawals
+Idempotency-Key: {UUID}   ← 필수
+```
+
+**Request**
+```json
+{ "amount": 500000 }
+```
+
+**Response `201 Created`**
+```json
+{
+  "withdrawalId": 12,
+  "amount": 500000,
+  "cashBalanceAfter": 750000,
+  "withdrawnAt": "2026-08-20T15:02:11+09:00"
+}
+```
+
+**판정 순서**
+
+| # | 조건 | 에러 | 상태 |
+|---|---|---|:---:|
+| 1 | `Idempotency-Key` 헤더 누락 | `IDEMPOTENCY_KEY_REQUIRED` | 400 |
+| 2 | 금액 0원 이하 | `WITHDRAWAL_AMOUNT_INVALID` | 400 |
+| 3 | 예수금 부족 | `WITHDRAWAL_INSUFFICIENT_CASH` (`detail.availableAmount`) | 409 |
+
+- **출금 가능액은 예수금 전액이다.** 별도 한도가 없다 — 잔고가 곧 상한이다.
+- **출금 한도 조회 API 를 만들지 않는다.** 출금 가능액은 `GET /account` 의 `cashBalance` 다.
+- **출금 수단(은행·계좌번호)을 받지 않는다.** 모의 서비스라 받아도 쓰이는 곳이 없다.
+
+> **출금해도 충전 한도는 돌아오지 않는다.** `GET /deposits/limit` 의 `depositedAmount` 는 **계좌 평생
+> 누적 충전액**이라 출금과 무관하다. 되돌리면 충전↔출금을 반복해 누적 한도를 무한히 우회할 수 있다.
+> **프론트는 출금 후 한도가 그대로인 것을 버그로 신고하지 않도록 이 규칙을 화면에 반영해야 한다.**
 
 ---
 
@@ -744,7 +922,7 @@ MVP는 시장가 즉시 체결만 존재한다. 접수와 체결이 분리되지
 2. 종목 거래정지 확인                     → 정지면 ORDER_STOCK_SUSPENDED
 3. 최신 수신 가격 조회                    → 없거나 허용 시간 초과면 ORDER_PRICE_UNAVAILABLE
 4. 체결 직전 재검증 (최신 가격 기준 재계산)
-     매수: 예수금 >= 수량 × 최신가        → 부족하면 ORDER_PRICE_CHANGED
+     매수: 예수금 >= 수량 × 최신가        → 부족하면 ORDER_INSUFFICIENT_CASH
      매도: 보유 수량 >= 주문 수량          → 부족하면 ORDER_INSUFFICIENT_QUANTITY
 5. 원장 기록 + 잔고 반영 (단일 트랜잭션)
      매수: 예수금 차감, 보유 수량 증가, 평균 매수가 가중평균 재계산
@@ -759,7 +937,6 @@ MVP는 시장가 즉시 체결만 존재한다. 접수와 체결이 분리되지
 | `ORDER_MARKET_CLOSED` | 409 | "지금은 주문할 수 없어요 (거래 시간 09:00~15:30)" |
 | `ORDER_STOCK_SUSPENDED` | 409 | 거래정지 사유 포함 |
 | `ORDER_PRICE_UNAVAILABLE` | 503 | "시세를 불러올 수 없어 주문이 제한됩니다" |
-| `ORDER_PRICE_CHANGED` | 409 | "가격이 변동되어 주문할 수 없어요. 다시 시도해 주세요" |
 | `ORDER_INSUFFICIENT_CASH` | 409 | "예수금이 부족합니다" |
 | `ORDER_INSUFFICIENT_QUANTITY` | 409 | "보유 수량이 부족합니다" |
 | `ORDER_QUANTITY_INVALID` | 400 | 0 이하 |
@@ -835,14 +1012,17 @@ GET /api/v1/transactions?type=ALL&cursor=&size=30
 
 | 파라미터 | 값 |
 |---|---|
-| `type` | `ALL`(기본) \| `BUY` \| `SELL` \| `DEPOSIT` |
+| `type` | `ALL`(기본) \| `BUY` \| `SELL` \| `DEPOSIT` \| `WITHDRAWAL` |
 
-`type`은 원장 유형이 아니라 **화면 필터 축**이다. 넷 중 `ALL`은 원장 유형이 아니고, 나머지 셋만 원장 유형과
-1:1로 대응한다. 그래서 `INITIAL_GRANT`를 가리키는 필터 값은 없다.
+`type`은 원장 유형이 아니라 **화면 필터 축**이다. 다섯 중 `ALL`은 원장 유형이 아니고, 나머지 넷만 원장
+유형과 1:1로 대응한다. 그래서 `INITIAL_GRANT`를 가리키는 필터 값은 없다.
 
-**`type=DEPOSIT`은 원장 유형 `DEPOSIT`(충전)만이다.** 이 필터의 합계가
+**`type=DEPOSIT`은 원장 유형 `DEPOSIT`(충전)만이다. 출금은 들어가지 않는다.** 이 필터의 합계가
 `GET /deposits/limit`의 `depositedAmount`(= 충전액 누적)와 같아야 하기 때문이다.
 둘이 어긋나면 "충전 내역을 다 더했는데 한도 화면의 숫자와 다르다"가 된다.
+
+**`type=WITHDRAWAL`은 원장 유형 `WITHDRAWAL`(출금)만이다.** `amount`는 **양수 절대값**으로 내려간다 —
+부호는 원장이 갖고 화면은 "출금"이라는 구분으로 방향을 표시한다. 충전 건과 같은 규칙이다.
 
 **`INITIAL_GRANT`는 v0.7.2 부터 발행되지 않는다.** 초기 지급이 없어졌기 때문이다(명세 2.2). 원장 유형과
 DB 제약에는 값이 남아 있고 지급 정책이 되살아나면 그때 다시 기록되지만, **지금 만들어지는 계정에는
@@ -852,7 +1032,7 @@ DB 제약에는 값이 남아 있고 지급 정책이 되살아나면 그때 다
 **갓 가입한 계정의 내역은 빈 목록이다.** 예수금이 0이고 원장에 아무 행도 없다 — `items: []`,
 `nextCursor: null`, `hasNext: false`. 오류가 아니라 정상 초기 상태다.
 
-화면의 필터 이름은 **"충전"**이다(명세 8장).
+화면의 필터 이름은 **"충전"**과 **"출금"**이다(명세 8장).
 
 **Response `200 OK`**
 ```json
@@ -873,6 +1053,19 @@ DB 제약에는 값이 남아 있고 지급 정책이 되살아나면 그때 다
     },
     {
       "transactionId": 300,
+      "type": "WITHDRAWAL",
+      "occurredAt": "2026-08-20T14:31:05+09:00",
+      "stockCode": null,
+      "stockName": null,
+      "price": null,
+      "quantity": null,
+      "amount": 500000,
+      "realizedProfit": null,
+      "realizedProfitRate": null,
+      "paymentMethod": null
+    },
+    {
+      "transactionId": 299,
       "type": "DEPOSIT",
       "occurredAt": "2026-08-20T14:31:02+09:00",
       "stockCode": null,
@@ -882,15 +1075,17 @@ DB 제약에는 값이 남아 있고 지급 정책이 되살아나면 그때 다
       "amount": 1000000,
       "realizedProfit": null,
       "realizedProfitRate": null,
-      "paymentMethod": "VIRTUAL_CARD"
+      "paymentMethod": "KAKAOPAY"
     }
   ],
-  "nextCursor": "eyJpZCI6Mjk5fQ==",
+  "nextCursor": "eyJpZCI6Mjk4fQ==",
   "hasNext": true
 }
 ```
 
-`type` 전체 값 (명세 8장 원장 유형): `INITIAL_GRANT` | `DEPOSIT` | `BUY` | `SELL`
+`WITHDRAWAL` 행은 `paymentMethod` 가 `null` 이다 — 출금은 수단을 받지 않는다 (§4.5).
+
+`type` 전체 값 (명세 8장 원장 유형): `INITIAL_GRANT` | `DEPOSIT` | `WITHDRAWAL` | `BUY` | `SELL`
 (`INITIAL_GRANT`는 현재 발행되지 않는다 — 위 참고)
 정렬은 최신순 고정. 기간·종목 필터는 확장 범위.
 
@@ -1023,14 +1218,26 @@ AI 서버로 넘길 때의 snake_case 변환은 백엔드 중계 계층이 담�
 ### 10.4 에러 통과 규칙
 
 - **AI 서버가 반환한 에러는 `code`·`message`·`detail`과 HTTP 상태를 그대로 통과**시킨다. 백엔드가 자기 5xx로 뭉개지 않는다. 프론트가 코드별로 다른 화면 처리를 해야 하기 때문이다 — 특히 `INSUFFICIENT_DATA`(409, 재시도 무의미)·`GUARDRAIL_BLOCKED`(422, 재시도 유도 금지)·`RETRIEVAL_FAILED`(502, 재시도 가능)·`LLM_TIMEOUT`(504, 재시도 가능). 전체 목록은 [AI 서비스 API 명세 §3](./aiApiSpec.md)을 따른다.
+- **예외가 둘 있다. `401`·`403`과 `429`는 그대로 통과시키지 않고 재포장한다** (v0.8 확정, 구 13장 6번).
+
+| upstream | 내려보내는 코드 | 상태 | 재포장하는 이유 |
+|---|---|:---:|---|
+| `401` · `403` | `AI_UPSTREAM_UNAVAILABLE` (`detail.reason = "upstream_auth"`) | 502 | 그대로 내려가면 **프론트 인터셉터가 사용자 토큰 만료로 오인해 로그아웃**시킨다. 실제 원인은 백엔드↔AI 사이의 내부 토큰 문제이고 사용자와 무관하다 |
+| `429` | `AI_UPSTREAM_RATE_LIMITED` | 503 | 그대로 내려가면 **사용자가 요청을 너무 많이 보낸 것으로 오인**된다. 실제로는 백엔드 전체의 AI 호출량이 상한에 닿은 것이다 |
+
+  나머지 상태 코드는 규칙 그대로 통과한다. `detail.reason` 은 백엔드가 붙이는 값이고 AI 서버가 준
+  `detail` 은 이 두 경우에 버려진다 — 내부 인증 실패 메시지에는 사용자에게 보여줄 것이 없다.
+
 - **백엔드 자신이 AI 서버에 도달하지 못한 경우**는 아래 코드를 새로 내려준다. 프론트는 이 코드로 AI 위젯만 에러 처리하고 나머지 화면(시세·주문)은 살린다.
 
 | 에러 | 상태 | 조건 |
 |---|---|---|
-| `AI_UPSTREAM_UNAVAILABLE` | 502 | AI 서버 연결 실패·비정상 응답 |
+| `AI_UPSTREAM_UNAVAILABLE` | 502 | AI 서버 연결 실패·비정상 응답. **위 401·403 재포장분도 이 코드다** |
+| `AI_UPSTREAM_RATE_LIMITED` | 503 | AI 서버가 429 를 돌려줌 (v0.8 신설) |
 | `AI_UPSTREAM_TIMEOUT` | 504 | 중계 타임아웃. 타임아웃 값은 AI의 LLM 타임아웃보다 길게 잡아 AI가 먼저 `LLM_TIMEOUT`을 돌려주게 한다 |
 
-- **위 두 코드에는 최상위 `requestId`가 없다.** 백엔드 자체 에러(§1.3)이고, AI 서버가 응답하지 않았으므로 `POST /ai/feedback`으로 찾을 원본 응답 자체가 없다. §10.3의 "에러 응답에도 보존"은 AI 서버가 돌려준 에러에만 해당한다. 프론트는 `requestId` 유무로 피드백 슬롯을 조건부로 만든다.
+- **연결 실패·타임아웃 두 코드에는 최상위 `requestId`가 없다.** 백엔드 자체 에러(§1.3)이고, AI 서버가 응답하지 않았으므로 `POST /ai/feedback`으로 찾을 원본 응답 자체가 없다. §10.3의 "에러 응답에도 보존"은 AI 서버가 돌려준 에러에만 해당한다. 프론트는 `requestId` 유무로 피드백 슬롯을 조건부로 만든다.
+  - **재포장한 401·403·429 는 AI 서버가 응답은 했으므로 `requestId` 가 있으면 보존한다.** 다만 그 응답으로 피드백을 남길 내용은 없다.
 
 ---
 
@@ -1061,16 +1268,29 @@ AI 서버로 넘길 때의 snake_case 변환은 백엔드 중계 계층이 담�
 | 코드 | 상태 |
 |---|---|
 | `AI_UPSTREAM_UNAVAILABLE` | 502 |
+| `AI_UPSTREAM_RATE_LIMITED` | 503 |
 | `AI_UPSTREAM_TIMEOUT` | 504 |
 
-AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETRIEVAL_FAILED`, `LLM_TIMEOUT` 등)는 그대로 통과되며, 목록은 [AI 서비스 API 명세 §3](./aiApiSpec.md)이 관리한다.
+AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETRIEVAL_FAILED`, `LLM_TIMEOUT` 등)는 그대로 통과되며, 목록은 [AI 서비스 API 명세 §3](./aiApiSpec.md)이 관리한다. **단 401·403·429 는 통과하지 않고 위 코드로 재포장한다** (§10.4).
 
 ### 충전
 | 코드 | 상태 |
 |---|---|
 | `DEPOSIT_AMOUNT_INVALID` | 400 |
+| `DEPOSIT_AMOUNT_MISMATCH` | 400 |
+| `DEPOSIT_NOT_FOUND` | 404 |
 | `DEPOSIT_PER_REQUEST_LIMIT_EXCEEDED` | 409 |
 | `DEPOSIT_LIMIT_EXCEEDED` | 409 |
+| `DEPOSIT_NOT_APPROVED` | 409 |
+| `DEPOSIT_PAYMENT_FAILED` | 409 |
+| `DEPOSIT_INVALID_STATE` | 409 |
+| `DEPOSIT_PG_UNAVAILABLE` | 502 |
+
+### 출금
+| 코드 | 상태 |
+|---|---|
+| `WITHDRAWAL_AMOUNT_INVALID` | 400 |
+| `WITHDRAWAL_INSUFFICIENT_CASH` | 409 |
 
 ### 종목 · 관심 종목
 | 코드 | 상태 |
@@ -1085,7 +1305,6 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | `ORDER_QUANTITY_INVALID` | 400 |
 | `ORDER_MARKET_CLOSED` | 409 |
 | `ORDER_STOCK_SUSPENDED` | 409 |
-| `ORDER_PRICE_CHANGED` | 409 |
 | `ORDER_INSUFFICIENT_CASH` | 409 |
 | `ORDER_INSUFFICIENT_QUANTITY` | 409 |
 | `ORDER_PRICE_UNAVAILABLE` | 503 |
@@ -1111,7 +1330,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | `AUTH_TOKEN_EXPIRED` | 401 | 서명 유효, 만료 (§1.2) |
 | `AUTH_INVALID_TOKEN` | 401 | 헤더 누락 · 형식 오류 · 서명 불일치 (§1.2) |
 
-**멱등성 키 필수 엔드포인트** (`POST /deposits` · `POST /orders`)
+**멱등성 키 필수 엔드포인트** (`POST /orders` · `POST /withdrawals`)
 
 | 코드 | 상태 | 조건 |
 |---|---|---|
@@ -1134,7 +1353,11 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/users/me` | — | |
 | GET | `/account` | — | |
 | GET | `/deposits/limit` | — | |
-| POST | `/deposits` | `DEPOSIT_AMOUNT_INVALID` · `DEPOSIT_PER_REQUEST_LIMIT_EXCEEDED` · `DEPOSIT_LIMIT_EXCEEDED` | 판정 순서: 멱등성 → `paymentMethod` 열거값(`INVALID_REQUEST`) → 금액 0 이하 → 1회 한도 → 누적 한도(`detail.remainingAmount`) |
+| POST | `/deposits/ready` | `DEPOSIT_AMOUNT_INVALID` · `DEPOSIT_PER_REQUEST_LIMIT_EXCEEDED` · `DEPOSIT_LIMIT_EXCEEDED` · `DEPOSIT_PG_UNAVAILABLE` | 판정 순서: `paymentMethod` 열거값(`INVALID_REQUEST`) → 금액 0 이하 → 1회 한도 → 누적 한도(`detail.remainingAmount`) → PG 준비 실패. **멱등성 헤더 없음** (§4.2) |
+| GET | `/deposits/kakao/approval` | — | **무인증.** 실패해도 본문 에러가 아니라 `302` 로 프론트 실패 URL 에 보낸다 (§4.3.1) |
+| POST | `/deposits/{paymentId}/mock-approve` | `DEPOSIT_NOT_FOUND` · `DEPOSIT_INVALID_STATE` · `DEPOSIT_PAYMENT_FAILED` | `TRANSFER` 전용. 판정 순서: 내 건인지(`NOT_FOUND`) → 수단이 `TRANSFER` 인지(`INVALID_STATE`) → `scenario` 실패값(`PAYMENT_FAILED`) |
+| POST | `/deposits/confirm` | `DEPOSIT_NOT_FOUND` · `DEPOSIT_NOT_APPROVED` · `DEPOSIT_PAYMENT_FAILED` · `DEPOSIT_AMOUNT_MISMATCH` · `DEPOSIT_LIMIT_EXCEEDED` | 판정 순서는 §4.4 표. **멱등 기준은 `paymentKey`** 이고 재전송은 `200` + 최초 본문 |
+| POST | `/withdrawals` | `WITHDRAWAL_AMOUNT_INVALID` · `WITHDRAWAL_INSUFFICIENT_CASH` | 판정 순서: 멱등성 → 금액 0 이하 → 예수금 부족(`detail.availableAmount`) |
 | GET | `/stocks/search` | — | `keyword` 2글자 미만 · `size` 범위 밖 → `INVALID_REQUEST`. 결과 없음은 빈 `items` |
 | GET | `/stocks/{stockCode}` | `STOCK_NOT_FOUND` | 상장폐지 종목 노출 여부는 별도 확정 항목(프론트 contracts P18) |
 | GET | `/stocks/{stockCode}/candles` | `STOCK_NOT_FOUND` | `period` 열거값 밖 → `INVALID_REQUEST` |
@@ -1147,7 +1370,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/watchlist` | — | `sort` 열거값 밖 → `INVALID_REQUEST` |
 | POST | `/watchlist` | `STOCK_NOT_FOUND` · `WATCHLIST_ALREADY_EXISTS` · `WATCHLIST_LIMIT_EXCEEDED` | 판정 순서: 종목 존재 → 중복 → 한도. 이미 등록된 종목은 한도가 찼어도 `ALREADY_EXISTS` |
 | DELETE | `/watchlist/{stockCode}` | — | 대상이 없어도 `204` |
-| POST | `/orders` | `ORDER_QUANTITY_INVALID` · `STOCK_NOT_FOUND` · `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` · `ORDER_INSUFFICIENT_CASH` · `ORDER_INSUFFICIENT_QUANTITY` · `ORDER_PRICE_CHANGED` | 판정 순서: 멱등성 → `side` 열거값(`INVALID_REQUEST`) → 수량 0 이하 → 종목 존재 → §7.2 1~5단계. `ORDER_INSUFFICIENT_CASH`는 매수, `ORDER_INSUFFICIENT_QUANTITY`는 매도에서만. **`ORDER_PRICE_CHANGED`의 판정 조건은 13장 7번 확정 전까지 발행하지 않는다** |
+| POST | `/orders` | `ORDER_QUANTITY_INVALID` · `STOCK_NOT_FOUND` · `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` · `ORDER_INSUFFICIENT_CASH` · `ORDER_INSUFFICIENT_QUANTITY` | 판정 순서: 멱등성 → `side` 열거값(`INVALID_REQUEST`) → 수량 0 이하 → 종목 존재 → §7.2 1~5단계. `ORDER_INSUFFICIENT_CASH`는 매수, `ORDER_INSUFFICIENT_QUANTITY`는 매도에서만 |
 | GET | `/orders/available` | `STOCK_NOT_FOUND` | `side` 열거값 밖 → `INVALID_REQUEST`. `tradable: false`의 `reason`은 `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` 중 하나이며 **HTTP 200**이다 (§7.3) |
 | GET | `/portfolio` | — | `sort` 열거값 밖 → `INVALID_REQUEST`. 보유 없음은 빈 `holdings` |
 | GET | `/transactions` | — | `type` 열거값 밖 · `cursor` 손상 · `size` 범위 밖 → `INVALID_REQUEST`. 내역 없음은 빈 `items` |
@@ -1174,7 +1397,11 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 인증 | GET | `/api/v1/users/me` | |
 | 계좌 | GET | `/api/v1/account` | |
 | 충전 | GET | `/api/v1/deposits/limit` | |
-| 충전 | POST | `/api/v1/deposits` | **필수** |
+| 충전 | POST | `/api/v1/deposits/ready` | |
+| 충전 | GET | `/api/v1/deposits/kakao/approval` | 무인증 |
+| 충전 | POST | `/api/v1/deposits/{paymentId}/mock-approve` | |
+| 충전 | POST | `/api/v1/deposits/confirm` | `paymentKey` |
+| 출금 | POST | `/api/v1/withdrawals` | **필수** |
 | 종목 | GET | `/api/v1/stocks/search` | |
 | 종목 | GET | `/api/v1/stocks/{stockCode}` | |
 | 종목 | GET | `/api/v1/stocks/{stockCode}/candles` | |
@@ -1210,10 +1437,17 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 3 | 분봉 도입 시 `candles`의 `period`/`interval` 확장 | `[S0-4]` | 5.3 |
 | 4 | AI 응답에 파생 지표를 백엔드가 포함할지 | `[S0-5]` | 9.1, 9.2 |
 | 5 | 5.6 수치 기본값(하트비트 10초·3회, TTL 30초, 폴링 5초/3초, KIS 순회 3초)의 실측 검증 — 채널과 기본값은 확정, 관계식 유지 하에 수치만 조정 가능 | `[S0-1]`·`[S0-2]` | 5.6 |
-| 6 | **AI 중계 시 upstream 상태 코드를 어디까지 그대로 통과시킬지.** 현행 10.4는 전 구간 통과인데, AI 서버의 401(내부 토큰 불일치 등)이 그대로 내려가면 프론트 인터셉터가 **사용자 토큰 만료로 오인해 로그아웃**시킨다. 429도 사용자 스로틀로 오인된다 | AI 파트 회신 | 10.4 |
-| 7 | **`ORDER_PRICE_CHANGED`의 판정 조건.** §7.2 4단계는 "최신가 재계산에서 예수금 부족이면 `ORDER_PRICE_CHANGED`"라고 적었지만, 주문 요청 본문(§7.1)에 프론트가 확인 화면에서 본 **기준가가 없어** 서버가 "가격이 바뀌었는지"를 알 수 없다. 현 구조에서는 예수금 부족이 전부 `ORDER_INSUFFICIENT_CASH`로 나간다. 선택지: (a) 요청에 `expectedPrice`를 추가하고 최신가와 다르면서 부족할 때만 `PRICE_CHANGED` (b) 코드를 폐기하고 `INSUFFICIENT_CASH`로 통일 | 프론트 협의 | 7.1, 7.2, 11.2 |
 
 다건 시세 조회 최대 건수는 **50건으로 확정**되어 목록에서 제거했다 (§5.5 — KIS 등록 한도는 백엔드 수집 계층이 흡수하므로 무관).
+
+v0.8 에서 두 항목이 확정되어 목록에서 빠졌다.
+
+- **AI 중계 upstream 상태 코드 통과 범위**(구 6번) — 401·403 → `502 AI_UPSTREAM_UNAVAILABLE`,
+  429 → `503 AI_UPSTREAM_RATE_LIMITED`(신설), 나머지는 그대로 통과로 확정 (§10.4).
+- **`ORDER_PRICE_CHANGED` 의 판정 조건**(구 7번) — **선택지 (b) 폐기로 확정.** 예수금 부족은 전부
+  `ORDER_INSUFFICIENT_CASH` 다. 요청에 `expectedPrice` 를 추가하는 (a) 를 기각한 이유는, 시장가 주문에서
+  "확인 화면의 가격"과 "체결가"가 다른 것은 <b>정상</b>이고 사용자가 할 일도 같기 때문이다 —
+  어느 쪽이든 다시 시도하거나 수량을 줄인다. 코드를 나눠도 화면이 달라지지 않는다.
 
 ---
 
