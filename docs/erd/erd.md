@@ -1,12 +1,16 @@
 # 백엔드 DB 스키마(ERD) 설계
 
-- 문서 버전: v1.1
-- 작성일: 2026-08-24 / 최종 수정: 2026-09-03
-- 기준 문서: [기능 명세서 v2.2](../spec/featureSpec.md) · [백엔드 API 명세 v0.7](../api/apiSpec.md) · [백엔드 컨벤션](../convention/backConvention.md)
+- 문서 버전: v1.2
+- 작성일: 2026-08-24 / 최종 수정: 2026-09-04
+- 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md) · [백엔드 API 명세 v0.8](../api/apiSpec.md) · [백엔드 컨벤션](../convention/backConvention.md)
 - 변경 이력:
   - v1.0 — MVP 스키마 11개 테이블 확정. Flyway `V1__init.sql` 의 입력
   - v1.1 — **투자 회차·계좌 리셋 제거**(이슈 #27). `investment_round` → `account` 교체,
     자식 4개 테이블의 `round_id` → `account_id`, 원장 유형 6종 → 4종. Flyway `V2__replace_round_with_account.sql`
+  - v1.2 — **`payment`·`withdrawal` 테이블 신설** (apiSpec v0.8). 충전이 2단계가 되면서 결제 상태
+    머신을 `payment`(§2.12)로 분리하고 `deposit` 은 확정된 것만 담는다. 출금 상세는 `withdrawal`(§2.13).
+    원장 유형 4종 → 5종(`WITHDRAWAL` 추가), `deposit.payment_method` 값 교체, `deposit.payment_id` 추가,
+    불변식 6 확장·7 신설, §3.3 충전 시나리오 교체·§3.4 출금 시나리오 신설. **13개 테이블이 된다**
 - 범위: 백엔드 DB의 MVP 스키마 전체. Flyway 마이그레이션 작성의 입력 문서다.
 - 범위 밖: AI 파트 DB(`ai_invest`), Redis 저장 데이터, 확장 기능 스키마.
 
@@ -14,7 +18,7 @@
 
 ## 0. 요약
 
-11개 테이블이다. 원장(`ledger_entry`)이 잔고 변동의 단일 진실 공급원이고, 예수금과 보유 종목은
+13개 테이블이다. 원장(`ledger_entry`)이 잔고 변동의 단일 진실 공급원이고, 예수금과 보유 종목은
 같은 트랜잭션에서 갱신되는 파생 스냅샷이다. 종목 마스터와 일봉은 백엔드가 소유한다.
 
 ```mermaid
@@ -27,8 +31,11 @@ erDiagram
     account ||--o{ ledger_entry : "원장(불변)"
     account ||--o{ holding : "잔고"
 
+    account ||--o{ payment : "결제 절차"
     ledger_entry ||--o| deposit : "type=DEPOSIT"
+    ledger_entry ||--o| withdrawal : "type=WITHDRAWAL"
     ledger_entry ||--o| trade : "type=BUY|SELL"
+    payment ||--o| deposit : "확정 시 1:1"
 
     stock ||--o{ daily_candle : ""
     stock ||--o{ holding : ""
@@ -54,7 +61,7 @@ erDiagram
 
 ### 1.2 원장 1개 + 도메인 테이블 분리
 
-`ledger_entry`가 4종 유형을 전부 담는 불변 시계열이고, `deposit`·`trade`가 유형별 상세를 1:1로 든다.
+`ledger_entry`가 5종 유형을 전부 담는 불변 시계열이고, `deposit`·`withdrawal`·`trade`가 유형별 상세를 1:1로 든다.
 
 - **단일 wide 테이블 기각** — 유형별로 유효한 컬럼이 달라 DB 제약으로 무결성을 거의 못 건다.
 - **도메인 테이블만 두고 UNION 기각** — 커서 페이징(apiSpec 1.5)과 예수금 재계산이 여러 테이블을
@@ -149,7 +156,7 @@ CHECK (total_deposited_amount BETWEEN 0 AND 100000000)
 |---|---|---|---|
 | `id` | BIGINT | PK | `transactionId` |
 | `account_id` | BIGINT | NOT NULL, FK → account | |
-| `type` | VARCHAR(16) | NOT NULL, CHECK IN (4종) | |
+| `type` | VARCHAR(16) | NOT NULL, CHECK IN (5종) | |
 | `cash_delta` | BIGINT | NOT NULL | 예수금 증감 |
 | `cash_balance_after` | BIGINT | NOT NULL, CHECK >= 0 | 기록 직후 예수금 |
 | `occurred_at` | TIMESTAMPTZ | NOT NULL | 응답의 `occurredAt` |
@@ -161,6 +168,7 @@ CHECK (total_deposited_amount BETWEEN 0 AND 100000000)
 |---|---|---|
 | `INITIAL_GRANT` | + 지급액 | 없음 |
 | `DEPOSIT` | + 충전액 | `deposit` |
+| `WITHDRAWAL` | − 출금액 | `withdrawal` |
 | `BUY` | − 체결금액 | `trade` |
 | `SELL` | + 체결금액 | `trade` |
 
@@ -193,7 +201,8 @@ DB 차원에서도 막는다.
 | `ledger_entry_id` | BIGINT | NOT NULL, **UNIQUE**, FK → ledger_entry | 1:1 |
 | `account_id` | BIGINT | NOT NULL, FK → account | 한도 재계산·감사용 |
 | `amount` | BIGINT | NOT NULL, CHECK 0 < amount <= 10000000 | 1회 한도를 DB가 보장 |
-| `payment_method` | VARCHAR(20) | NOT NULL, CHECK IN ('VIRTUAL_CARD','VIRTUAL_TRANSFER') | |
+| `payment_method` | VARCHAR(20) | NOT NULL, CHECK IN ('KAKAOPAY','TRANSFER') | |
+| `payment_id` | BIGINT | NOT NULL, **UNIQUE**, FK → payment | 어느 결제 건이 이 충전을 만들었나 |
 | `created_at` | TIMESTAMPTZ | NOT NULL | |
 
 ```sql
@@ -201,6 +210,13 @@ CREATE INDEX ix_deposit_account ON deposit (account_id);
 ```
 
 충전 취소가 없으므로(featureSpec 1.1) 취소 상태 컬럼을 두지 않는다.
+
+**`payment` 와 나눈 이유** (v0.8) — 이 테이블은 **원장 상세**다. 불변식 6("`DEPOSIT` 원장 1행 =
+`deposit` 1행")을 지켜야 하므로 **여기 행이 있으면 이미 돈이 움직였다는 뜻**이어야 한다. 그런데 결제는
+"준비했지만 아직 승인 안 됨" 같은 중간 상태를 갖는다. 한 테이블로 합치면 원장 없는 `deposit` 행이
+생겨 불변식이 깨진다. 그래서 **상태 머신은 `payment`(§2.12)가 갖고, 이 테이블은 확정된 것만 담는다.**
+
+`payment_id` 가 UNIQUE 인 것이 **"한 결제로 두 번 충전되지 않는다"** 를 DB에서 보장한다.
 
 ### 2.5 trade — 체결 상세
 
@@ -347,6 +363,62 @@ CREATE INDEX ix_recent_keyword_user ON recent_search_keyword (user_id, searched_
 
 최대 10건. 같은 검색어를 다시 검색하면 `searched_at`만 갱신한다.
 
+### 2.12 payment — 결제 절차 (v0.8 신설)
+
+충전의 **상태 머신**이다. `deposit`(§2.4)이 확정된 충전만 담는 것과 달리, 이 테이블은 준비·승인·실패
+같은 중간 상태를 갖는다.
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| `id` | BIGINT | PK | `paymentId` |
+| `account_id` | BIGINT | NOT NULL, FK → account | |
+| `payment_method` | VARCHAR(20) | NOT NULL, CHECK IN ('KAKAOPAY','TRANSFER') | |
+| `amount` | BIGINT | NOT NULL, CHECK 0 < amount <= 10000000 | 1회 한도를 DB가 보장 |
+| `status` | VARCHAR(10) | NOT NULL, CHECK IN ('READY','APPROVED','DONE','FAILED') | |
+| `payment_key` | VARCHAR(64) | **UNIQUE**, NULL 허용 | PG가 발급. 승인 전에는 NULL |
+| `pg_tid` | VARCHAR(64) | NULL | PG 거래 식별자(카카오 `tid`) |
+| `fail_code` | VARCHAR(50) | NULL | 실패 사유 |
+| `created_at` | TIMESTAMPTZ | NOT NULL | |
+| `approved_at` | TIMESTAMPTZ | NULL | |
+| `completed_at` | TIMESTAMPTZ | NULL | 원장 반영 시각 |
+| `expires_at` | TIMESTAMPTZ | NOT NULL | 이후 `FAILED`로 정리 (기본 15분) |
+
+```sql
+CREATE INDEX ix_payment_account ON payment (account_id, id DESC);
+```
+
+상태 전이: `READY` → `APPROVED` → `DONE`. 어느 단계에서든 `FAILED` 로 갈 수 있고, **`FAILED` 와 `DONE`
+에서는 나가지 않는다.**
+
+**`payment_key` UNIQUE 가 충전 멱등성의 근거다** (apiSpec §1.4·§4.4). 같은 키로 확정 요청이 두 번 와도
+`DONE` 인 건은 이미 `deposit` 이 물려 있어 두 번째는 최초 응답을 재생한다. Redis 멱등성 필터를 쓰지
+않는 이유 — 그 필터의 키는 클라이언트가 만드는데, 결제창을 거쳐 돌아온 요청은 최초 호출과 다른
+화면·다른 세션일 수 있다.
+
+**승인만으로는 돈이 움직이지 않는다.** `APPROVED` 는 "PG가 결제를 승인했다"일 뿐이고 원장은 `DONE` 으로
+가는 트랜잭션에서만 기록된다. 그래서 카카오 승인 콜백(apiSpec §4.3.1)이 무인증이어도 안전하다.
+
+### 2.13 withdrawal — 출금 상세 (v0.8 신설)
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| `id` | BIGINT | PK | `withdrawalId` |
+| `ledger_entry_id` | BIGINT | NOT NULL, **UNIQUE**, FK → ledger_entry | 1:1 |
+| `account_id` | BIGINT | NOT NULL, FK → account | 조회·감사용 |
+| `amount` | BIGINT | NOT NULL, CHECK amount > 0 | **양수 절대값.** 부호는 원장이 갖는다 |
+| `created_at` | TIMESTAMPTZ | NOT NULL | |
+
+```sql
+CREATE INDEX ix_withdrawal_account ON withdrawal (account_id);
+```
+
+`deposit` 과 같은 모양이다 — 원장 1행에 상세 1행이 붙는다. **출금 수단 컬럼이 없다**(featureSpec 3.4).
+**`payment` 같은 상태 머신도 없다** — 출금은 외부 PG를 거치지 않아 중간 상태가 생기지 않는다.
+요청 한 번이 곧 확정이고, 멱등성은 `Idempotency-Key` 헤더가 맡는다(apiSpec §1.4).
+
+**`total_deposited_amount` 를 건드리지 않는다.** 그 값은 계좌 평생 누적 **충전액**이라 출금과 무관하고,
+그래서 불변식 2 가 출금 뒤에도 그대로 성립한다.
+
 ---
 
 ## 3. 트랜잭션 시나리오
@@ -382,13 +454,31 @@ apiSpec 7.2의 5단계를 이 스키마에 매핑한다.
 `cash_balance >= 0` CHECK가 애플리케이션 검증을 통과한 버그를 DB 바닥에서 한 번 더 막는다.
 4번에서 부족하면 수량을 줄이지 않고 거부한다(`ORDER_PRICE_CHANGED` / `ORDER_INSUFFICIENT_QUANTITY`).
 
-### 3.3 충전 (`POST /deposits`)
+### 3.3 충전 확정 (`POST /deposits/confirm`)
 
-`account` FOR UPDATE → `total_deposited_amount + amount <= 100,000,000` 검증 →
-`ledger_entry`(`DEPOSIT`) INSERT → `deposit` INSERT → `account`의 `cash_balance`와
-`total_deposited_amount` UPDATE.
+**외부 PG 호출은 이 트랜잭션 밖**에서 하고 결과만 들고 들어온다. PG가 느린 동안 계좌 행을 잠그고
+있으면 그 사용자의 주문까지 함께 막힌다.
 
-한도는 계정 전체 누적이다. 리셋이 없으므로 한도를 되돌릴 경로도 없다.
+`payment` FOR UPDATE → 상태·금액 검증 → `account` FOR UPDATE →
+`total_deposited_amount + amount <= 100,000,000` 검증 → `ledger_entry`(`DEPOSIT`) INSERT →
+`deposit` INSERT → `account`의 `cash_balance`와 `total_deposited_amount` UPDATE →
+`payment.status = DONE`.
+
+`payment` 를 먼저 잠그는 이유 — 같은 `paymentKey` 로 두 요청이 동시에 오면 **둘 다 통과해 두 번
+충전되는 것**을 막아야 한다. 계좌보다 결제 건이 좁은 단위라 먼저 잠근다.
+
+한도는 계정 전체 누적이다. 리셋이 없으므로 한도를 되돌릴 경로도 없고, **출금해도 줄지 않는다**(3.4).
+
+### 3.4 출금 (`POST /withdrawals`)
+
+`account` FOR UPDATE → `cash_balance >= amount` 검증 → `ledger_entry`(`WITHDRAWAL`, delta 음수) INSERT →
+`withdrawal` INSERT → `account.cash_balance` UPDATE.
+
+충전 확정의 뒷부분과 대칭이고 **외부 호출이 없어 더 짧다.** 락 대상은 같은 계좌 한 행이라
+충전·주문과 서로 직렬화된다.
+
+**`total_deposited_amount` 를 건드리지 않는다.** 그래서 불변식 2가 출금 뒤에도 성립한다.
+되돌리면 충전↔출금 반복으로 누적 한도를 무한히 우회할 수 있다(featureSpec 3.4).
 
 ---
 
@@ -403,7 +493,8 @@ apiSpec 7.2의 5단계를 이 스키마에 매핑한다.
 | 3 | `holding.quantity` = 계좌·종목별 `SUM(trade.quantity * CASE side WHEN 'BUY' THEN 1 ELSE -1 END)` |
 | 4 | 사용자별 `account`는 정확히 1개 |
 | 5 | `ledger_entry`의 행은 생성 후 변경되지 않는다 |
-| 6 | `type='DEPOSIT'`인 `ledger_entry`는 `deposit` 1행과, `BUY`·`SELL`은 `trade` 1행과 정확히 짝을 이룬다 |
+| 6 | `type='DEPOSIT'`인 `ledger_entry`는 `deposit` 1행과, `type='WITHDRAWAL'`은 `withdrawal` 1행과, `BUY`·`SELL`은 `trade` 1행과 정확히 짝을 이룬다 |
+| 7 | `deposit` 1행 = `payment` 1행 (`payment_id` UNIQUE). 한 결제가 두 번 충전되지 않는다 |
 
 ---
 
