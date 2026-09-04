@@ -159,13 +159,18 @@ CHECK (total_deposited_amount BETWEEN 0 AND 100000000)
 
 | `type` | `cash_delta` | 상세 테이블 |
 |---|---|---|
-| `INITIAL_GRANT` | +1,000,000 | 없음 |
+| `INITIAL_GRANT` | + 지급액 | 없음 |
 | `DEPOSIT` | + 충전액 | `deposit` |
 | `BUY` | − 체결금액 | `trade` |
 | `SELL` | + 체결금액 | `trade` |
 
 `ROUND_OPEN`·`ROUND_CLOSE`는 회차 전환을 기록하던 `cash_delta = 0` 행이라 회차와 함께 사라졌다.
 기록할 사건 자체가 없다.
+
+**`INITIAL_GRANT`는 현재 발행되지 않는다.** 초기 지급이 없어져 지급액이 0이기 때문이다(featureSpec 2.2).
+같은 이유다 — `cash_delta = 0`인 행은 기록할 사건이 없다. **유형과 `ck_ledger_type` CHECK 에는 값을
+남겨 둔다**: 지급 정책은 설정값(`finch.account.initial-cash`)이라 되살아날 수 있고, 그때 마이그레이션
+없이 그대로 쓴다. 지금 만들어지는 계좌의 원장은 **비어 있는 상태로 시작한다.**
 
 인덱스:
 
@@ -348,9 +353,14 @@ CREATE INDEX ix_recent_keyword_user ON recent_search_keyword (user_id, searched_
 
 ### 3.1 최초 로그인 (`POST /auth/kakao`, 신규)
 
-한 트랜잭션에서: `users` INSERT → `account` INSERT(`cash_balance=1000000`,
-`total_deposited_amount=0`) → `ledger_entry` INSERT(`INITIAL_GRANT`, delta +1,000,000,
-`cash_balance_after=1000000`).
+한 트랜잭션에서: `users` INSERT → `account` INSERT(`cash_balance=0`, `total_deposited_amount=0`).
+
+**초기 지급이 없으므로 `ledger_entry` 는 만들지 않는다** (featureSpec 2.2). 갓 만든 계좌의 원장은
+비어 있고, 불변식 1(`cash_balance` = `SUM(cash_delta)`)은 `0 = 0` 으로 성립한다.
+
+지급액(`finch.account.initial-cash`)을 0보다 크게 두면 세 번째 INSERT 가 돌아온다 —
+`ledger_entry`(`INITIAL_GRANT`, delta +지급액, `cash_balance_after`=지급액). 세 INSERT 가 한 트랜잭션이어야
+한다는 규칙은 그대로다: 계정만 있고 계좌가 없는 상태가 생기면 안 된다.
 
 ### 3.2 주문 체결 (`POST /orders`)
 

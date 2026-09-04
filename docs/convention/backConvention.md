@@ -150,7 +150,7 @@ erd §3.1이 `users`·`account`·`ledger_entry` INSERT를 **한 트랜잭션**�
 
 | `type` | 기록 주체 |
 |---|---|
-| `INITIAL_GRANT` | `account` (계좌 개설 시 1회) |
+| `INITIAL_GRANT` | `account` (계좌 개설 시 1회. **지급액이 0이면 기록하지 않는다** — 현재 정책이 0이다) |
 | `DEPOSIT` | `deposit` |
 | `BUY` · `SELL` | `order` |
 
@@ -232,7 +232,7 @@ erd §3.1이 `users`·`account`·`ledger_entry` INSERT를 **한 트랜잭션**�
 - `docs/convention/gitConvention.md` — 브랜치·커밋 규칙 (중복 서술 금지)
 - `docs/convention/frontConvention.md` — 데이터 표기 규약(6장)은 FE 문서와 값이 일치해야 한다 (비율·금액·종목코드·등락 색)
 - `docs/api/apiSpec.md` — 응답 형식·멱등성·페이징·에러 코드의 계약 원본. 이 문서와 충돌 금지
-- 확정 조건: 시장가 즉시 체결(접수·체결 미분리), 거래 시간 09:00~15:30 KST, 초기 예수금 100만 원
+- 확정 조건: 시장가 즉시 체결(접수·체결 미분리), 거래 시간 09:00~15:30 KST, 초기 예수금 없음(0원)
 - 시세는 KIS 앱키 1개 기준 실시간 등록 한도 + 초과분 REST 폴링 폴백. 한도 수치는 `[S0-1]` 실측 대기 (41은 가정값)
 
 ## 범위 밖
