@@ -76,6 +76,7 @@ env/
 .env.*
 !.env.example
 infra/ai.env
+.notify.json
 application-secret.yml
 application-local.yml
 
