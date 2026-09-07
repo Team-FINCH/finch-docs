@@ -1,7 +1,7 @@
 # 백엔드 DB 스키마(ERD) 설계
 
-- 문서 버전: v1.2
-- 작성일: 2026-08-24 / 최종 수정: 2026-09-04
+- 문서 버전: v1.2.1
+- 작성일: 2026-08-24 / 최종 수정: 2026-09-07
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md) · [백엔드 API 명세 v0.8](../api/apiSpec.md) · [백엔드 컨벤션](../convention/backConvention.md)
 - 변경 이력:
   - v1.0 — MVP 스키마 11개 테이블 확정. Flyway `V1__init.sql` 의 입력
@@ -11,6 +11,8 @@
     머신을 `payment`(§2.12)로 분리하고 `deposit` 은 확정된 것만 담는다. 출금 상세는 `withdrawal`(§2.13).
     원장 유형 4종 → 5종(`WITHDRAWAL` 추가), `deposit.payment_method` 값 교체, `deposit.payment_id` 추가,
     불변식 6 확장·7 신설, §3.3 충전 시나리오 교체·§3.4 출금 시나리오 신설. **13개 테이블이 된다**
+  - v1.2.1 — §3.2 주문 시나리오의 폐기된 `ORDER_PRICE_CHANGED` 를 `ORDER_INSUFFICIENT_CASH` 로 정정 (이슈 #33).
+    apiSpec v0.8 §13 의 폐기 확정을 놓친 잔재였다. 스키마 변경 없음
 - 범위: 백엔드 DB의 MVP 스키마 전체. Flyway 마이그레이션 작성의 입력 문서다.
 - 범위 밖: AI 파트 DB(`ai_invest`), Redis 저장 데이터, 확장 기능 스키마.
 
@@ -452,7 +454,9 @@ apiSpec 7.2의 5단계를 이 스키마에 매핑한다.
 
 락 대상이 계좌 한 행뿐이라 같은 사용자의 동시 주문이 직렬화된다.
 `cash_balance >= 0` CHECK가 애플리케이션 검증을 통과한 버그를 DB 바닥에서 한 번 더 막는다.
-4번에서 부족하면 수량을 줄이지 않고 거부한다(`ORDER_PRICE_CHANGED` / `ORDER_INSUFFICIENT_QUANTITY`).
+4번에서 부족하면 수량을 줄이지 않고 거부한다(매수 `ORDER_INSUFFICIENT_CASH` / 매도 `ORDER_INSUFFICIENT_QUANTITY`).
+`ORDER_PRICE_CHANGED` 는 apiSpec v0.8 에서 폐기됐다 — 확인 화면의 가격과 체결가가 다른 것은 시장가 주문에서 정상이고,
+"가격이 변동돼 부족해진 것"과 "원래 부족했던 것"을 서버가 구분할 수 없으며 사용자가 할 일도 같다(apiSpec §13, featureSpec 7.3).
 
 ### 3.3 충전 확정 (`POST /deposits/confirm`)
 
