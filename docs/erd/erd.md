@@ -311,7 +311,9 @@ CHECK (high_price >= low_price AND high_price >= open_price AND high_price >= cl
        AND low_price <= open_price AND low_price <= close_price)
 ```
 
-PK가 곧 `period=1M|3M|1Y` range scan의 인덱스다. 분봉 도입 시(S0-4) 이 테이블을 건드리지 않고
+PK가 곧 `period=1M|3M|1Y|3Y` range scan의 인덱스다. **주봉·월봉(`interval=WEEK|MONTH`)도 이 테이블만 읽는다** —
+range scan 결과를 응답 직전에 묶으므로 집계 테이블이 없다 (apiSpec §5.3, v0.8.4). 원본이 일봉이라 언제든 다시 묶을 수
+있고, 주봉·월봉을 따로 저장하면 일일 배치가 갱신할 곳이 셋이 된다. 분봉 도입 시(S0-4) 이 테이블을 건드리지 않고
 `minute_candle`을 새로 만든다.
 
 ### 2.9 watchlist_item — 관심 종목
