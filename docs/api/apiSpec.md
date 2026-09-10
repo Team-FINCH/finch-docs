@@ -2,7 +2,7 @@
 
 - 문서 버전: v0.8.6 (확정판)
 - 작성일: 2026-08-20 / 최종 수정: 2026-09-10
-- 기준 문서: [기능 명세서 v2.2](../spec/featureSpec.md)
+- 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
   - v0.1 — 기능 명세서에서 도출한 초안
@@ -1529,8 +1529,61 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | AI 중계 | POST | `/api/v1/ai/orders/preview` | |
 | AI 중계 | GET | `/api/v1/ai/briefing` | |
 | AI 중계 | POST | `/api/v1/ai/feedback` | |
+| AI 중계 | GET | `/api/v1/ai/wiki` | |
+| AI 중계 | PUT | `/api/v1/ai/wiki/theses/{stockCode}` | |
+| AI 중계 | DELETE | `/api/v1/ai/wiki/facts/{factId}` | |
 | AI 내부 | GET | `/internal/v1/portfolio` | |
 | AI 내부 | GET | `/internal/v1/trades` | |
+
+---
+
+## 12.1 실측 대조 (2026-09-10)
+
+**이 문서에 적힌 엔드포인트가 실제로 배포돼 있는지 전부 확인했다.** 명세와 구현이 갈라지면
+프론트가 Mock 을 만들 근거를 잃는데, 갈라진 사실 자체가 드러나지 않는 것이 더 문제다.
+
+방법은 **응답 코드만 본다.** 인증 없이 요청하면 401 이 오는데, 그것이 라우트가 있다는 증거다 —
+없으면 Spring 이 404 를 낸다.
+
+```sh
+while read -r m p; do
+  u=$(printf '%s' "$p" | sed -e 's/{stockCode}/005930/' -e 's/{paymentId}/1/'                               -e 's/{factId}/1/'    -e 's/{keywordId}/1/')
+  printf '%-6s %-46s %s
+' "$m" "$p"     "$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "https://finchapp.org$u")"
+done < endpoints.txt
+```
+
+| 결과 | 건수 | 뜻 |
+|---|---:|---|
+| 401 | 37 | 핸들러까지 도달해 인증에서 막혔다. 구현되어 배포돼 있다 |
+| 400 | 2 | 무인증으로 부를 수 있으나 필수 파라미터가 없어 거부됐다. 역시 라우트가 있다 |
+| **404** | **0** | — |
+
+400 두 건은 `POST /api/v1/auth/kakao` 와 `GET /api/v1/deposits/kakao/approval` 이다.
+둘 다 토큰 없이 부르는 경로가 맞다 — 앞은 로그인 자체이고 뒤는 카카오가 보내는 브라우저 리다이렉트다.
+
+**404 가 0건이라는 것이 판정의 핵심이다.** 이 문서의 엔드포인트 39개가 전부 살아 있다.
+
+### AI 서비스 쪽 경로가 문서와 다르다
+
+같은 방법으로 AI 컨테이너의 OpenAPI 문서를 읽었다.
+
+```sh
+docker exec finch-ai python -c "import urllib.request, json;   print(sorted(json.load(urllib.request.urlopen('http://localhost:8000/openapi.json'))['paths']))"
+```
+
+`/api/ai/v1` 아래 라우트 11개와 `/health` 가 떠 있고, **이 문서 §10.1 의 중계 대상 경로와 일치한다.**
+
+다만 `docs/api/aiApiSpec.md` 는 같은 경로를 `POST /chat` 처럼 접두사 없이 적고 있다.
+**이 문서가 아니라 그쪽이 뒤처진 것으로 보인다** — 중계 표(§10.1)의 오른쪽 열이 실제와 맞다.
+AI 파트 확인이 필요한 항목으로 남긴다.
+
+### 이번 대조에서 고친 것
+
+- **§12 요약표에 위키 중계 3행이 빠져 있었다.** `GET /api/v1/ai/wiki`,
+  `PUT /api/v1/ai/wiki/theses/{stockCode}`, `DELETE /api/v1/ai/wiki/facts/{factId}` 다.
+  §10.1 에는 있고 실제로도 배포돼 있는데 요약에만 없었다 — 요약만 보고 계약을 세면 위키가 없는 것으로 읽힌다.
+- 머리의 기준 문서 표기가 기능 명세서 v2.2 였다. 실제로 반영한 것은 v2.4 다 (충전 4단계, 출금 신설).
 
 ---
 
