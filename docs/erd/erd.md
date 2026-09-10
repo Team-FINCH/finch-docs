@@ -48,6 +48,58 @@ erDiagram
 
 ---
 
+## 0.1 실측 대조 (2026-09-10)
+
+**이 문서가 운영 DB 와 일치하는지 직접 확인했다.** 설계 문서가 스키마와 갈라지는 것은 흔한 일이고,
+갈라진 뒤에는 어느 쪽이 맞는지 아무도 모른다. 그래서 대조 방법과 결과를 남긴다.
+
+```sql
+-- 테이블 목록
+select table_name from information_schema.tables
+where table_schema = 'public' order by 1;
+
+-- 테이블별 컬럼
+select table_name, string_agg(column_name, ', ' order by ordinal_position)
+from information_schema.columns
+where table_schema = 'public' group by table_name order by table_name;
+
+-- CHECK 와 UNIQUE 제약
+select c.conrelid::regclass::text, c.contype::text, pg_get_constraintdef(c.oid)
+from pg_constraint c
+  join pg_class t on t.oid = c.conrelid
+  join pg_namespace n on n.oid = t.relnamespace
+where n.nspname = 'public' and c.contype in ('c', 'u') order by 1;
+```
+
+| 대조 항목 | 결과 |
+|---|---|
+| 테이블 개수 | **13개 일치.** 운영 DB 에는 `flyway_schema_history` 가 하나 더 있는데 마이그레이션 관리용이라 ERD 대상이 아니다 |
+| 컬럼 | **13개 테이블의 모든 컬럼이 일치.** 이름, 개수, 순서 모두 |
+| CHECK 제약 | **문서가 명시한 것이 전부 존재.** 아래 목록 |
+| UNIQUE 제약 | **문서가 명시한 것이 전부 존재.** 아래 목록 |
+
+확인된 제약 중 설계 결정을 직접 지키는 것들이다.
+
+| 제약 | 지키는 결정 |
+|---|---|
+| `account`: `UNIQUE (user_id)` | 사용자당 계좌 1개 (§1.5) |
+| `account`: `CHECK (cash_balance >= 0)` | 예수금이 음수가 되지 않는다 (§4) |
+| `account`: `CHECK (total_deposited_amount BETWEEN 0 AND 100000000)` | 계정 전체 누적 충전 한도 (§2.2) |
+| `ledger_entry`: `type IN (INITIAL_GRANT, DEPOSIT, WITHDRAWAL, BUY, SELL)` | 원장 유형 5종. `INITIAL_GRANT` 는 남아 있으나 발행하지 않는다 (기능명세 §2.2) |
+| `deposit`: `payment_method IN (KAKAOPAY, TRANSFER)` | v2.4 의 수단 교체가 반영돼 있다. 구 `VIRTUAL_CARD` 는 없다 |
+| `deposit`: `CHECK (amount BETWEEN 1 AND 10000000)` | 1회 충전 한도 |
+| `trade`: `CHECK (executed_amount = quantity * executed_price)` | 수수료와 세금 미적용 (§4) |
+| `trade`: `SELL 이면 avg_buy_price, realized_profit 가 NOT NULL. BUY 면 둘 다 NULL` | 실현손익은 매도에만 있다 (§2.5) |
+| `holding`: `CHECK (quantity > 0 OR avg_buy_price = 0)` | 전량 매도 후 잔재 평균가가 남지 않는다 (§2.6) |
+| `holding`: `UNIQUE (account_id, stock_code)` | 한 계좌에 같은 종목 행이 둘 생기지 않는다 |
+| `payment`: `status IN (READY, APPROVED, DONE, FAILED)` | 결제 상태 머신 (§2.12) |
+| `payment`: `UNIQUE (payment_key)` | 같은 결제를 두 번 확정해도 한 번만 반영된다 |
+| `deposit`, `trade`, `withdrawal`: `UNIQUE (ledger_entry_id)` | 원장 1행에 상세 1행 (§1.2) |
+
+**어긋난 항목은 없다.** 이 문서를 Flyway 마이그레이션의 입력으로 쓴 방식이 유지되고 있다는 뜻이다.
+
+---
+
 ## 1. 설계 결정과 기각한 대안
 
 ### 1.1 종목 마스터·일봉을 백엔드 DB가 소유한다
