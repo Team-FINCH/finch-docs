@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.5 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-08
+- 문서 버전: v0.8.6 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-10
 - 기준 문서: [기능 명세서 v2.2](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -71,6 +71,13 @@
     같은 값이다. **저장하지 않고 응답마다 새로 읽으므로** 요청할 때마다 달라진다 — 확정 전의 봉을 저장하면 미완성인 채로
     굳기 때문이다. `WEEK`·`MONTH`는 새 봉을 만들지 않고 이번 주·이번 달 봉에 합친다. 16:00 배치가 그날을 저장하면 사라진다.
     시세를 모르면 얹지 않으므로 **프론트는 마지막 봉이 오늘이라고 가정하지 않는다** (티켓 169)
+  - v0.8.6 — §10.4 의 **429 재포장을 철회**한다. v0.8 이 "실제로는 백엔드 전체의 AI 호출량이 상한에 닿은 것"이라는
+    이유로 503 으로 바꿔 내려보냈는데, AI 서버의 한도는 **사용자·엔드포인트별**(`(user_id, endpoint)`)이라 그 전제가
+    사실과 달랐다. 전체 상한은 존재하지 않는다. **상태를 `429` 로 되돌리고**, 두 한도를 가르는 `detail.reason`
+    (`request_rate_limit` · `daily_token_budget`)과 AI 서버의 `message` 를 보존한다. `Retry-After` 는 AI 서버가
+    준 경우에만 싣는다 — 일일 예산 소진은 자정(KST)까지 풀리지 않는데 기본값 5초를 지어내면 프론트가 5초 뒤에
+    재시도했다가 또 막힌다. **`code` 는 `AI_UPSTREAM_RATE_LIMITED` 그대로다** — 프론트는 `code` 로 분기하므로
+    분기표가 바뀌지 않는다 (티켓 215)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -1299,15 +1306,31 @@ AI 서버로 넘길 때의 snake_case 변환은 백엔드 중계 계층이 담�
 | upstream | 내려보내는 코드 | 상태 | 재포장하는 이유 |
 |---|---|:---:|---|
 | `401` · `403` | `AI_UPSTREAM_UNAVAILABLE` (`detail.reason = "upstream_auth"`) | 502 | 그대로 내려가면 **프론트 인터셉터가 사용자 토큰 만료로 오인해 로그아웃**시킨다. 실제 원인은 백엔드↔AI 사이의 내부 토큰 문제이고 사용자와 무관하다 |
-| `429` | `AI_UPSTREAM_RATE_LIMITED` (**`Retry-After` 헤더 동봉**) | 503 | 그대로 내려가면 **사용자가 요청을 너무 많이 보낸 것으로 오인**된다. 실제로는 백엔드 전체의 AI 호출량이 상한에 닿은 것이다 |
+| `429` | `AI_UPSTREAM_RATE_LIMITED` (`detail.reason`, **AI 의 `message`**, AI 가 준 경우 `Retry-After`) | **429** | 상태와 뜻을 바꾸지 않는다. AI 서버의 한도는 **사용자·엔드포인트별**이라 "이 사용자가 많이 보냈다"가 사실이다. `code` 만 백엔드 값으로 바꿔 **AI 다리에서 온 한도**임을 표시한다 (v0.8.6) |
 
-  나머지 상태 코드는 규칙 그대로 통과한다. `detail.reason` 은 백엔드가 붙이는 값이고 AI 서버가 준
-  `detail` 은 이 두 경우에 버려진다 — 내부 인증 실패 메시지에는 사용자에게 보여줄 것이 없다.
+  나머지 상태 코드는 규칙 그대로 통과한다. **`401`·`403` 은 AI 서버가 준 `detail` 을 버린다** — 내부 인증
+  실패 메시지에는 사용자에게 보여줄 것이 없고, `detail.reason = "upstream_auth"` 는 백엔드가 붙이는 값이다.
+  **`429` 는 버리지 않는다** — 아래 `reason` 이 프론트가 두 한도를 가르는 유일한 값이다.
 
-  **`503 AI_UPSTREAM_RATE_LIMITED` 에는 `Retry-After` 헤더가 실린다** (v0.8.1, 이슈 #34). 규칙은 §1.4 의
+  **`429 AI_UPSTREAM_RATE_LIMITED` 의 `detail.reason`** (v0.8.6, 티켓 215). AI 서버가 준 값을 그대로 옮긴다.
+
+| `reason` | 뜻 | 언제 풀리나 | 프론트 |
+|---|---|---|---|
+| `request_rate_limit` | 분당 요청 횟수 한도 | `Retry-After` 초 뒤 | 그 값만큼 기다렸다 재시도 |
+| `daily_token_budget` | 그날의 AI 사용량을 다 씀 | **자정(KST)** | **재시도하지 않는다.** 문구를 그대로 보여준다 |
+
+  - AI 서버가 `detail` 을 주지 않았거나 `reason` 이 없으면 `detail` 자체를 싣지 않는다. 프론트는 `reason` 이
+    없을 때 `request_rate_limit` 과 같이 다룬다 — 재시도가 안전한 쪽이 기본값이다.
+  - `reason` **외의 키는 옮기지 않는다**. AI 가 함께 주는 `endpoint`·`used_tokens`·`limit_tokens` 는 내부 값이다.
+  - `message` 는 **AI 서버가 준 것을 그대로** 내려보낸다. 두 한도의 문구가 이미 다르고(`"요청이 너무 많습니다…"` ·
+    `"오늘 사용할 수 있는 AI 분석량을 모두 사용했습니다."`) AI 쪽이 정확하다. 없으면 백엔드 기본 문구로 채운다.
+
+  **`Retry-After` 헤더는 AI 서버가 준 경우에만 싣는다** (v0.8.1 이슈 #34, v0.8.6 개정). 규칙은 §1.4 의
   `IDEMPOTENCY_IN_PROGRESS` 와 같다 — 재시도 간격은 클라이언트가 추측하지 않고 서버가 내려준다.
   - 값은 **초 단위 정수**다. AI 서버가 429 에 붙여 준 `Retry-After` 를 그대로 옮기고, HTTP 날짜 형식이면 백엔드가 초로 환산한다.
-  - AI 서버가 헤더를 주지 않으면 백엔드 기본값을 싣는다 (`finch.ai.rate-limit-retry-after`, 기본 **5초**). 헤더가 없는 503 은 없다.
+  - **AI 서버가 헤더를 주지 않으면 붙이지 않는다.** v0.8.1 의 "기본 5초" 규칙은 폐기한다 —
+    AI 는 `daily_token_budget` 일 때 헤더를 주지 않는데, 그 자리에 5초를 지어내면 자정까지 풀리지 않을 요청을
+    5초 뒤에 다시 보내게 만든다. 헤더가 없으면 프론트가 자체 백오프로 판단한다.
   - **최소 1초**다. 0 은 "즉시 재시도"라 되풀이를 부른다.
   - 프론트는 이 값만큼 기다린 뒤 같은 요청을 다시 보낸다. AI 슬롯 여럿이 한 화면에 떠 있으면 전부 같은 값을 받으므로
     각자 임의 백오프로 rate limit 을 더 밀어붙이는 일이 없다.
@@ -1318,11 +1341,11 @@ AI 서버로 넘길 때의 snake_case 변환은 백엔드 중계 계층이 담�
 | 에러 | 상태 | 조건 |
 |---|---|---|
 | `AI_UPSTREAM_UNAVAILABLE` | 502 | AI 서버 연결 실패·비정상 응답. **위 401·403 재포장분도 이 코드다** |
-| `AI_UPSTREAM_RATE_LIMITED` | 503 | AI 서버가 429 를 돌려줌 (v0.8 신설) |
+| `AI_UPSTREAM_RATE_LIMITED` | **429** | AI 서버가 429 를 돌려줌. 상태·`message`·`detail.reason` 을 그대로 옮긴다 (v0.8 신설, v0.8.6 에서 503 → 429) |
 | `AI_UPSTREAM_TIMEOUT` | 504 | 중계 타임아웃. 타임아웃 값은 AI의 LLM 타임아웃보다 길게 잡아 AI가 먼저 `LLM_TIMEOUT`을 돌려주게 한다 |
 
 - **연결 실패·타임아웃 두 코드에는 최상위 `requestId`가 없다.** 백엔드 자체 에러(§1.3)이고, AI 서버가 응답하지 않았으므로 `POST /ai/feedback`으로 찾을 원본 응답 자체가 없다. §10.3의 "에러 응답에도 보존"은 AI 서버가 돌려준 에러에만 해당한다. 프론트는 `requestId` 유무로 피드백 슬롯을 조건부로 만든다.
-  - **재포장한 401·403·429 는 AI 서버가 응답은 했으므로 `requestId` 가 있으면 보존한다.** 다만 그 응답으로 피드백을 남길 내용은 없다.
+  - **재포장한 401·403 과 429 는 AI 서버가 응답은 했으므로 `requestId` 가 있으면 보존한다.** 다만 그 응답으로 피드백을 남길 내용은 없다.
 
 ---
 
@@ -1353,7 +1376,7 @@ AI 서버로 넘길 때의 snake_case 변환은 백엔드 중계 계층이 담�
 | 코드 | 상태 |
 |---|---|
 | `AI_UPSTREAM_UNAVAILABLE` | 502 |
-| `AI_UPSTREAM_RATE_LIMITED` | 503 (`Retry-After` 헤더 동봉, §10.4) |
+| `AI_UPSTREAM_RATE_LIMITED` | 429 (`detail.reason`, AI 가 준 경우 `Retry-After` 헤더, §10.4) |
 | `AI_UPSTREAM_TIMEOUT` | 504 |
 
 AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETRIEVAL_FAILED`, `LLM_TIMEOUT` 등)는 그대로 통과되며, 목록은 [AI 서비스 API 명세 §3](./aiApiSpec.md)이 관리한다. **단 401·403·429 는 통과하지 않고 위 코드로 재포장한다** (§10.4).
@@ -1459,7 +1482,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/orders/available` | `STOCK_NOT_FOUND` | `side` 열거값 밖 → `INVALID_REQUEST`. `tradable: false`의 `reason`은 `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` 중 하나이며 **HTTP 200**이다 (§7.3) |
 | GET | `/portfolio` | — | `sort` 열거값 밖 → `INVALID_REQUEST`. 보유 없음은 빈 `holdings` |
 | GET | `/transactions` | — | `type` 열거값 밖 · `cursor` 손상 · `size` 범위 밖 → `INVALID_REQUEST`. 내역 없음은 빈 `items` |
-| POST | `/ai/stocks/{stockCode}/analysis` | `AI_UPSTREAM_UNAVAILABLE` · `AI_UPSTREAM_TIMEOUT` + **AI 서버 발행 코드 통과** | AI 서버 코드 목록은 [aiApiSpec §3](./aiApiSpec.md). 백엔드는 종목 존재를 미리 검사하지 않는다 — AI 서버의 `INSTRUMENT_NOT_FOUND`(404)가 그대로 내려간다. `AI_UPSTREAM_*`에는 `requestId`가 없다 (§10.4) |
+| POST | `/ai/stocks/{stockCode}/analysis` | `AI_UPSTREAM_UNAVAILABLE` · `AI_UPSTREAM_RATE_LIMITED` · `AI_UPSTREAM_TIMEOUT` + **AI 서버 발행 코드 통과** | AI 서버 코드 목록은 [aiApiSpec §3](./aiApiSpec.md). 백엔드는 종목 존재를 미리 검사하지 않는다 — AI 서버의 `INSTRUMENT_NOT_FOUND`(404)가 그대로 내려간다. 연결 실패·타임아웃 두 코드에는 `requestId`가 없고, 401·403·429 재포장분에는 있다 (§10.4) |
 | POST | `/ai/chat` | 위와 동일 | |
 | POST | `/ai/portfolio/diagnosis` | 위와 동일 | 보유 종목 0개는 AI 서버의 `INSUFFICIENT_DATA`(409)이며 정상 거절이다 |
 | POST | `/ai/portfolio/attribution` | 위와 동일 | |
@@ -1529,6 +1552,8 @@ v0.8 에서 두 항목이 확정되어 목록에서 빠졌다.
 
 - **AI 중계 upstream 상태 코드 통과 범위**(구 6번) — 401·403 → `502 AI_UPSTREAM_UNAVAILABLE`,
   429 → `503 AI_UPSTREAM_RATE_LIMITED`(신설), 나머지는 그대로 통과로 확정 (§10.4).
+  **v0.8.6 에서 429 쪽을 철회했다** — 상태는 `429` 로 되돌아가고 `detail.reason` 과 AI 의 `message` 를 보존한다.
+  재포장이 남은 것은 401·403 뿐이다.
 - **`ORDER_PRICE_CHANGED` 의 판정 조건**(구 7번) — **선택지 (b) 폐기로 확정.** 예수금 부족은 전부
   `ORDER_INSUFFICIENT_CASH` 다. 요청에 `expectedPrice` 를 추가하는 (a) 를 기각한 이유는, 시장가 주문에서
   "확인 화면의 가격"과 "체결가"가 다른 것은 <b>정상</b>이고 사용자가 할 일도 같기 때문이다 —
