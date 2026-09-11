@@ -1,6 +1,6 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.7 (확정판)
+- 문서 버전: v0.8.8 (확정판)
 - 작성일: 2026-08-20 / 최종 수정: 2026-09-11
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
@@ -82,6 +82,11 @@
     USD-KRW · NASDAQ 은 범위 밖이다. 지수는 금액이 아니라 **소수 둘째 자리까지의 `number`** 다(§1.1 금액 규칙의 예외).
     `stale` 규칙은 §5.4 와 같은 모양이고 판정 시간만 지수용으로 따로 둔다. 고유 에러 코드는 없다.
     **기존 계약을 깨지 않는다** — 엔드포인트가 늘어난 것뿐이다 (티켓 225)
+  - v0.8.8 — §10.1 에 **`POST /ai/wiki/theses` 중계를 추가**한다. v0.5 는 이 경로를 "AI 가 대화 안에서 스스로 부르는 경로라
+    중계 대상이 아니다" 로 적었는데, 위키 탭과 알림함에서 사용자가 매수 이유를 **처음** 적는 입구가 필요해졌다. `PUT` 은 `active`
+    논지가 없으면 거부하므로 그 입구가 없었다. **처음 적을 때는 `POST`, 고칠 때는 `PUT`** 이다. AI 쪽 동작은 그대로다 —
+    같은 종목의 `active` 논지가 있으면 `closed` 로 닫고 새로 기록한다(교체). 새 에러 코드는 없다. **기존 계약을 깨지 않는다**
+    — 404 였던 경로가 열린 것뿐이다 (이슈 #56, 티켓 235)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -1311,10 +1316,20 @@ GET /internal/v1/trades?cursor=&size=100
 | `GET /api/v1/ai/briefing` | `GET /api/ai/v1/briefing` | 데일리 브리핑 |
 | `POST /api/v1/ai/feedback` | `POST /api/ai/v1/feedback` | 응답 피드백 (`requestId` 기반) |
 | `GET /api/v1/ai/wiki` | `GET /api/ai/v1/wiki` | 사용자 위키 조회 |
+| `POST /api/v1/ai/wiki/theses` | `POST /api/ai/v1/wiki/theses` | 투자 논지 새로 기록 |
 | `PUT /api/v1/ai/wiki/theses/{stockCode}` | `PUT /api/ai/v1/wiki/theses/{ticker}` | 투자 논지 수정 |
 | `DELETE /api/v1/ai/wiki/facts/{factId}` | `DELETE /api/ai/v1/wiki/facts/{factId}` | 위키 사실 삭제 |
 
-`POST /api/ai/v1/wiki/theses`는 AI 서비스가 내부에서 스스로 호출하는 경로라 **중계 대상이 아니다** — 프론트 호출 경로가 없다. (이슈 #12, #7 회신 기준)
+**`POST /wiki/theses` 는 v0.8.8 부터 중계한다** (이슈 #56). 원래 AI 가 대화 안에서 스스로 부르는 경로라 중계하지 않았는데(이슈 #12, #7),
+위키 탭과 알림함에서 사용자가 매수 이유를 **처음** 적는 입구가 필요해졌다. `PUT` 은 `active` 논지가 없으면 거부하므로
+**처음 적을 때는 `POST`, 고칠 때는 `PUT`** 이다.
+
+- 본문: `{ "ticker": "000660", "text": "HBM 구조적 성장에 베팅", "horizon": "long", "linkedTradeId": "101" }` —
+  `ticker`·`text`(1~500자) 필수, `horizon`·`linkedTradeId` 선택. 경로 변수가 없어 종목은 본문의 `ticker` 로 보낸다.
+  `linkedTradeId` 는 **문자열**이다(AI 쪽 필드가 문자열) — 매수 체결 id(§7.1 `orderId`)를 넣을 때는 문자열로 바꿔 보낸다.
+- 동작: 같은 종목에 `active` 논지가 있으면 그것을 `closed` 로 닫고 새로 기록한다(교체). 이력은 남고 `active` 가 둘이 되지 않는다.
+  논지가 있는 종목에 `POST` 를 보내도 실패하지 않지만 이력이 한 줄 늘어난다 — 고칠 때는 `PUT` 을 쓴다.
+- 응답: `200 OK`, 기록된 논지 한 건 (§10.3 재포장).
 
 ### 10.2 인증
 
@@ -1546,6 +1561,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | POST | `/ai/orders/preview` | 위와 동일 | |
 | GET | `/ai/briefing` | 위와 동일 | |
 | POST | `/ai/feedback` | 위와 동일 | 모르는 `requestId`의 처리는 AI 서버 몫이다 (프론트 contracts P14) |
+| POST | `/ai/wiki/theses` | 위와 동일 | 본문 검증은 AI 가 한다 — `ticker`·`text` 누락이나 500자 초과는 AI 의 `400 INVALID_REQUEST` 가 그대로 내려간다 |
 | GET | `/internal/v1/portfolio` · `/internal/v1/trades` | `AUTH_INVALID_TOKEN` · `RESOURCE_NOT_FOUND` | `X-Internal-Token` 누락·불일치 → `401 AUTH_INVALID_TOKEN`. `X-User-Id`에 해당하는 사용자 없음 → `404 RESOURCE_NOT_FOUND`. 사용자 JWT 인증은 적용되지 않는다 |
 
 **표에 없는 코드는 그 엔드포인트에서 나오지 않는다.** 구현 중 새 사유가 생기면 이 표와 §11 목록을 먼저 고치고 코드를 붙인다. 백엔드 테스트(`ErrorCodeContractTest`)가 enum 전체와 §11 목록의 일치를 검사한다.
@@ -1588,6 +1604,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | AI 중계 | GET | `/api/v1/ai/briefing` | |
 | AI 중계 | POST | `/api/v1/ai/feedback` | |
 | AI 중계 | GET | `/api/v1/ai/wiki` | |
+| AI 중계 | POST | `/api/v1/ai/wiki/theses` | |
 | AI 중계 | PUT | `/api/v1/ai/wiki/theses/{stockCode}` | |
 | AI 중계 | DELETE | `/api/v1/ai/wiki/facts/{factId}` | |
 | AI 내부 | GET | `/internal/v1/portfolio` | |
