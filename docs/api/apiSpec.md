@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.6 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-10
+- 문서 버전: v0.8.7 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-11
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -78,6 +78,10 @@
     준 경우에만 싣는다 — 일일 예산 소진은 자정(KST)까지 풀리지 않는데 기본값 5초를 지어내면 프론트가 5초 뒤에
     재시도했다가 또 막힌다. **`code` 는 `AI_UPSTREAM_RATE_LIMITED` 그대로다** — 프론트는 `code` 로 분기하므로
     분기표가 바뀌지 않는다 (티켓 215)
+  - v0.8.7 — §5.7 **시장 지수 조회** 신설 (`GET /market/indices`). 홈 상단 지수 자리의 값 출처다. KOSPI · KOSDAQ 두 개이고
+    USD-KRW · NASDAQ 은 범위 밖이다. 지수는 금액이 아니라 **소수 둘째 자리까지의 `number`** 다(§1.1 금액 규칙의 예외).
+    `stale` 규칙은 §5.4 와 같은 모양이고 판정 시간만 지수용으로 따로 둔다. 고유 에러 코드는 없다.
+    **기존 계약을 깨지 않는다** — 엔드포인트가 늘어난 것뿐이다 (티켓 225)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -848,6 +852,58 @@ GET /api/v1/stocks/prices?stockCodes=005930,000660,035720
 키를 항목으로 더한다 — 이때 바뀌는 것은 서버 설정과 시크릿뿐이고, 시세 페이로드·관심 신호·`asOf` 계약은 그대로다.
 프론트는 키 수를 알 수 없고 알 필요도 없다.
 
+### 5.7 시장 지수 조회
+
+```
+GET /api/v1/market/indices
+```
+
+홈 상단 지수 표시용이다. **KOSPI · KOSDAQ 두 지수를 한 번에** 준다. 파라미터는 없다.
+
+**Response `200 OK`**
+```json
+{
+  "items": [
+    { "indexCode": "KOSPI",  "currentValue": 2600.54, "changeValue": -12.31, "changeRate": -0.47, "asOf": "2026-09-11T14:30:05+09:00", "stale": false },
+    { "indexCode": "KOSDAQ", "currentValue": 793.84,  "changeValue": 0.95,   "changeRate": 0.12,  "asOf": "2026-09-11T14:30:05+09:00", "stale": false }
+  ]
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `indexCode` | `string` | `KOSPI` \| `KOSDAQ`. §5.1 `market` 과 같은 문자열이다 |
+| `currentValue` | `number` \| `null` | 현재 지수. **소수 둘째 자리까지** (§1.1 금액 규칙의 예외 — 지수는 원 단위 금액이 아니다) |
+| `changeValue` | `number` \| `null` | 전일 종가 대비 변동폭. 부호가 있다(하락이면 음수). 소수 둘째 자리까지 |
+| `changeRate` | `number` \| `null` | 전일 대비 등락률. §1.1 규칙 그대로 **백분율 값** (`-0.47` = −0.47%) |
+| `asOf` | `string` \| `null` | 서버가 이 값을 받은 시각 |
+| `stale` | `boolean` | 아래 규칙 |
+
+- **`items` 는 언제나 두 개이고 순서는 `KOSPI` → `KOSDAQ` 고정이다.** 값을 모르는 지수도 빠지지 않고 아래 "값 없음" 모양으로 온다.
+  프론트는 배열 길이나 순서를 검사하지 않아도 된다.
+- **장이 닫혀 있으면 마지막 종가가 그대로 온다.** 장 마감 뒤·주말·휴장일에도 `stale: false` 이고 값은 마지막 거래일 종가다.
+  장 운영 여부는 이 응답에 없다.
+- 표시용 이름(`코스피` 등)은 내려주지 않는다. `indexCode` 를 화면이 라벨로 바꾼다.
+
+**`stale` 규칙** — §5.4 와 같은 세 갈래이고, 판정 시간만 다르다.
+
+| 상황 | `currentValue` · `changeValue` · `changeRate` | `asOf` | `stale` |
+|---|---|---|---|
+| 정상 수신 중 | 최신 값 | 최신 수신 시각 | `false` |
+| **수신 끊김** (60초 초과) | **마지막 수신 값 유지** | **마지막 수신 시각** | `true` |
+| **값 없음** (기동 직후 첫 수신 전, 수신 이력 없음) | **전부 `null`** | `null` | `true` |
+
+**수집은 서버가 관심 신호와 무관하게 상시로 한다.** 종목 시세(§5.6)처럼 요청을 관심 신호로 세지 않는다 — 지수는 두 개뿐이라
+누가 보든 안 보든 계속 갱신한다. 그래서 첫 요청도 곧바로 값이 있다(서버 기동 직후만 예외).
+
+| 항목 | 값 |
+|---|---|
+| 백엔드 → KIS 수집 주기 | 10초 |
+| `stale` 판정 시간 | 60초 (수집 주기보다 길어야 한다 — §5.6 관계식 3 과 같은 이유) |
+| 프론트 폴링 주기 (권장 — 프론트 재량) | 15초. **10초보다 짧게 불러도 값이 바뀌지 않는다** — 서버가 10초에 한 번 갱신한다 |
+
+**웹소켓 topic 은 없다.** REST 폴링만 쓴다.
+
 ---
 
 ## 6. 최근 본 종목 · 최근 검색어 · 관심 종목
@@ -1471,6 +1527,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/stocks/{stockCode}/candles` | `STOCK_NOT_FOUND` | `period` 열거값 밖 → `INVALID_REQUEST` |
 | GET | `/stocks/{stockCode}/price` | `STOCK_NOT_FOUND` | **시세 없음은 에러가 아니다** — `stale: true` + `null` (§5.4) |
 | GET | `/stocks/prices` | — | `stockCodes` 누락·빈 값·50건 초과 → `INVALID_REQUEST`. 없는 종목은 `items`에서 제외하고 실패시키지 않는다 (§5.5) |
+| GET | `/market/indices` | — | 파라미터 없음. **지수를 몰라도 에러가 아니다** — 그 항목만 `stale: true` + `null` (§5.7) |
 | GET | `/stocks/recent` | — | |
 | DELETE | `/stocks/recent` · `/stocks/recent/{stockCode}` | — | **대상이 없어도 `204`** (멱등). 목록에 없는 종목·이미 지운 항목을 다시 지워도 실패하지 않는다 |
 | GET | `/stocks/search/recent` | — | |
@@ -1515,6 +1572,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 종목 | GET | `/api/v1/stocks/{stockCode}/candles` | |
 | 종목 | GET | `/api/v1/stocks/{stockCode}/price` | |
 | 종목 | GET | `/api/v1/stocks/prices` | |
+| 시장 | GET | `/api/v1/market/indices` | |
 | 최근 본 | GET/DELETE | `/api/v1/stocks/recent` | |
 | 최근 검색 | GET/DELETE | `/api/v1/stocks/search/recent` | |
 | 관심 종목 | GET/POST/DELETE | `/api/v1/watchlist` | |

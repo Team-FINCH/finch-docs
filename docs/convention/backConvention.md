@@ -76,7 +76,7 @@ com.finch
 | `withdrawal` | `withdrawal` | 4.5 (`/withdrawals`) |
 | `ledger` | `ledger_entry` | 8.2 (`/transactions`) |
 | `stock` | `stock`, `daily_candle` | 5.1~5.3 (검색·상세·캔들) |
-| `price` | 없음 (Redis) | 5.4~5.6 (`/price`, `/prices`, STOMP `/ws`) |
+| `price` | 없음 (Redis) | 5.4~5.7 (`/price`, `/prices`, STOMP `/ws`, `/market/indices`) |
 | `order` | `trade` | 7장 (`/orders`, `/orders/available`) |
 | `portfolio` | `holding` | 8.1 (`/portfolio`) |
 | `watchlist` | `watchlist_item` | 6장 관심 종목 |
