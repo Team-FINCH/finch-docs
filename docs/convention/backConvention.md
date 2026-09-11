@@ -34,7 +34,7 @@
 
 ### 2. 패키지 구조
 
-기준: [ERD v1.2](../erd/erd.md)의 13개 테이블과 [apiSpec v0.8](../api/apiSpec.md)의 엔드포인트 묶음.
+기준: [ERD v1.3](../erd/erd.md)의 14개 테이블과 [apiSpec v0.8](../api/apiSpec.md)의 엔드포인트 묶음.
 
 #### 2.1 전체 트리
 
@@ -61,7 +61,8 @@ com.finch
     ├── portfolio/              # 보유 종목, 잔고·평가손익
     ├── watchlist/              # 관심 종목
     ├── recent/                 # 최근 본 종목, 최근 검색어
-    └── ai/                     # AI 중계 + 내부 연동 API 제공
+    ├── ai/                     # AI 중계 + 내부 연동 API 제공
+    └── inbox/                  # 알림함 (보유·체결·위키 논지를 대조해 계산, 읽음 표시)
 ```
 
 #### 2.2 도메인과 소유 테이블
@@ -82,6 +83,7 @@ com.finch
 | `watchlist` | `watchlist_item` | 6장 관심 종목 |
 | `recent` | `recent_viewed_stock`, `recent_search_keyword` | 6장 최근 본·최근 검색어 |
 | `ai` | 없음 | 9장(`/internal/v1/**`), 10장(`/api/v1/ai/**`) |
+| `inbox` | `inbox_read` | 6.4 (`/inbox`, `/inbox/{itemId}/read`) |
 
 Refresh Token과 멱등성 키는 Redis에 있고 테이블이 없다 (ERD §1.4). Refresh Token은 `global/security`,
 멱등성 키는 `global/idempotency`의 **필터**가 다룬다 — 특정 도메인의 관심사가 아니다.
@@ -118,6 +120,7 @@ domain/order/
 3층                 portfolio
 4층                 deposit    withdrawal    order    watchlist    recent
 5층                 ai
+6층                 inbox
 ```
 
 - `order`는 `account`(예수금 락) · `ledger`(원장 기록) · `portfolio`(보유 갱신) · `price`(최신가) · `stock`(거래정지)을 참조한다
@@ -126,6 +129,9 @@ domain/order/
   참조할 일도 없다(출금은 충전 건을 되돌리는 것이 아니라 잔고에서 빼는 별개 사건이다)
 - `account`는 계좌 개설 시 `ledger`를 참조한다 (`INITIAL_GRANT` 기록)
 - `ai`는 `portfolio`와 `order`를 읽어 내부 API로 노출한다 (읽기 전용, 원장을 쓰지 않는다 — featureSpec 10.1)
+- `inbox`는 `portfolio`(보유) · `order`(마지막 매수) · `ai`(위키 논지)를 읽어 알림함 항목을 계산한다. 셋 중 가장 위가 5층 `ai`라
+  6층이다. 알림함을 부르는 도메인은 없다 — 논지를 쓰는 중계가 알림함 캐시를 지워야 할 때도 `ai`가 자기 캐시(`WikiThesisService`)를
+  지우고 `inbox`를 부르지 않는다
 - `ledger`·`stock`·`price`는 다른 도메인을 참조하지 않는다
 
 **같은 층 예외 — `auth` → `account` (가입 시 계좌 개설).** 명시한 이 한 쌍만 허용한다.

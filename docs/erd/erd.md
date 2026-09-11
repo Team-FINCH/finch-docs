@@ -1,7 +1,7 @@
 # 백엔드 DB 스키마(ERD) 설계
 
-- 문서 버전: v1.2.1
-- 작성일: 2026-08-24 / 최종 수정: 2026-09-07
+- 문서 버전: v1.3
+- 작성일: 2026-08-24 / 최종 수정: 2026-09-11
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md) · [백엔드 API 명세 v0.8](../api/apiSpec.md) · [백엔드 컨벤션](../convention/backConvention.md)
 - 변경 이력:
   - v1.0 — MVP 스키마 11개 테이블 확정. Flyway `V1__init.sql` 의 입력
@@ -13,6 +13,8 @@
     불변식 6 확장·7 신설, §3.3 충전 시나리오 교체·§3.4 출금 시나리오 신설. **13개 테이블이 된다**
   - v1.2.1 — §3.2 주문 시나리오의 폐기된 `ORDER_PRICE_CHANGED` 를 `ORDER_INSUFFICIENT_CASH` 로 정정 (이슈 #33).
     apiSpec v0.8 §13 의 폐기 확정을 놓친 잔재였다. 스키마 변경 없음
+  - v1.3 — **`inbox_read` 테이블 신설** (apiSpec v0.8.9 §6.4 알림함, §2.14). 알림함 항목은 저장하지 않고 조회 때마다
+    계산하므로 **읽음 표시만** 남는다. Flyway `V5__inbox_read.sql`. **14개 테이블이 된다**
 - 범위: 백엔드 DB의 MVP 스키마 전체. Flyway 마이그레이션 작성의 입력 문서다.
 - 범위 밖: AI 파트 DB(`ai_invest`), Redis 저장 데이터, 확장 기능 스키마.
 
@@ -20,7 +22,7 @@
 
 ## 0. 요약
 
-13개 테이블이다. 원장(`ledger_entry`)이 잔고 변동의 단일 진실 공급원이고, 예수금과 보유 종목은
+14개 테이블이다. 원장(`ledger_entry`)이 잔고 변동의 단일 진실 공급원이고, 예수금과 보유 종목은
 같은 트랜잭션에서 갱신되는 파생 스냅샷이다. 종목 마스터와 일봉은 백엔드가 소유한다.
 
 ```mermaid
@@ -29,6 +31,7 @@ erDiagram
     users ||--o{ watchlist_item : ""
     users ||--o{ recent_viewed_stock : ""
     users ||--o{ recent_search_keyword : ""
+    users ||--o{ inbox_read : "알림함 읽음"
 
     account ||--o{ ledger_entry : "원장(불변)"
     account ||--o{ holding : "잔고"
@@ -475,6 +478,23 @@ CREATE INDEX ix_withdrawal_account ON withdrawal (account_id);
 **`total_deposited_amount` 를 건드리지 않는다.** 그 값은 계좌 평생 누적 **충전액**이라 출금과 무관하고,
 그래서 불변식 2 가 출금 뒤에도 그대로 성립한다.
 
+### 2.14 inbox_read — 알림함 읽음 표시 (v0.8.9 신설)
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| `user_id` | BIGINT | PK(복합), FK → users | |
+| `item_id` | VARCHAR(64) | PK(복합) | 알림함 항목 id (apiSpec §6.4). 지금은 `record-{종목코드}-{tradeId}` |
+| `read_at` | TIMESTAMPTZ | NOT NULL | |
+
+**알림함 항목 자체는 테이블이 없다.** "적어야 할 것"(`record`)은 `holding`(보유 수량 > 0)과 `trade`(종목별 마지막 매수)와
+AI 위키 논지를 대조해 조회 때마다 계산한다. 저장해 두면 논지가 생겼을 때 항목을 닫아야 하는데, AI 채팅 안에서 생긴 논지는
+백엔드를 지나지 않아 닫을 수 없다. 계산하면 어느 경로로 적었든 다음 조회에서 빠진다.
+
+**PK 가 읽음 표시의 멱등을 보장한다** — 쓰기는 `INSERT ... ON CONFLICT DO NOTHING` 하나다. 목록에서 빠진 항목의 행은
+지우지 않는다. 같은 `item_id` 가 다시 나올 일이 없어 무해하다 — 재매수는 `tradeId` 가 바뀌어 새 id 가 된다.
+
+Redis 가 아니라 DB 인 이유 — 읽음은 사용자 상태라 날아가면 뱃지가 되살아난다(§1.4 는 휘발성 데이터만 Redis 에 둔다).
+
 ---
 
 ## 3. 트랜잭션 시나리오
@@ -577,6 +597,8 @@ apiSpec 7.2의 5단계를 이 스키마에 매핑한다.
 | `GET /transactions` | ledger_entry, deposit, trade, stock |
 | `GET /internal/v1/portfolio` | account, holding, stock |
 | `GET /internal/v1/trades` | trade |
+| `GET /inbox` | account, holding, stock, trade, inbox_read + AI 위키 논지(Redis 캐시) |
+| `POST /inbox/{itemId}/read` | inbox_read |
 
 `/api/v1/ai/**` 중계 경로는 DB를 읽지 않는다.
 
@@ -589,6 +611,8 @@ apiSpec 7.2의 5단계를 이 스키마에 매핑한다.
 | Refresh Token | Redis (§1.4) |
 | 멱등성 키 | Redis, TTL 24시간 |
 | 현재가·등락률·`stale` 판정 | Redis 시세 캐시. `asOf`가 신선도를 표현한다 |
+| 알림함 항목 | 저장하지 않는다 — 조회 때마다 계산한다 (§2.14). 읽음만 `inbox_read` |
+| 사용자별 `active` 논지 종목 | Redis `ai:wiki:active-theses:{userId}`. 5분 안이면 재사용, 24시간 보관. 논지 쓰기 중계가 지운다 (apiSpec §6.4) |
 | `instruments`, `price_daily`, `documents`, `embeddings`, `events`, `wiki`, `ai_responses` | AI 파트 DB(`ai_invest`) 소유. 백엔드는 알 필요가 없다 |
 | 지정가 주문·미체결 | 확장 범위. 도입 시 `order` 테이블을 신설해 `trade`와 1:N으로 잇는다 |
 | 충전 취소 | 확장 범위. 충전 건별 사용 추적 설계가 선행 |

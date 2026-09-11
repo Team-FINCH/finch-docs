@@ -1,6 +1,6 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.8 (확정판)
+- 문서 버전: v0.8.9 (확정판)
 - 작성일: 2026-08-20 / 최종 수정: 2026-09-11
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
@@ -87,6 +87,11 @@
     논지가 없으면 거부하므로 그 입구가 없었다. **처음 적을 때는 `POST`, 고칠 때는 `PUT`** 이다. AI 쪽 동작은 그대로다 —
     같은 종목의 `active` 논지가 있으면 `closed` 로 닫고 새로 기록한다(교체). 새 에러 코드는 없다. **기존 계약을 깨지 않는다**
     — 404 였던 경로가 열린 것뿐이다 (이슈 #56, 티켓 235)
+  - v0.8.9 — §6.4 **알림함** 신설 (`GET /inbox` · `POST /inbox/{itemId}/read`). 항목 종류는 `record`·`wiki`·`news` 셋으로
+    정하되 **지금 나오는 것은 `record`(매수 이유 기록 요청) 하나**다 — `wiki` 는 AI 추측 생성기가 없고(이슈 #52), `news` 는
+    종목별 소식의 원천이 정해지지 않았다. `record` 는 저장된 알림이 아니라 **보유 종목과 위키 논지를 대조해 조회 때마다 계산**하므로
+    논지가 생기면 별도 처리 없이 목록에서 빠진다. 매수 이유 저장은 §10.1 의 `POST /ai/wiki/theses` 로 하고 알림함 전용 저장
+    경로는 두지 않는다. 새 에러 코드는 없다. **기존 계약을 깨지 않는다** (이슈 #57, 티켓 236)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -911,7 +916,7 @@ GET /api/v1/market/indices
 
 ---
 
-## 6. 최근 본 종목 · 최근 검색어 · 관심 종목
+## 6. 최근 본 종목 · 최근 검색어 · 관심 종목 · 알림함
 
 ### 6.1 최근 본 종목 (명세 5장)
 
@@ -998,6 +1003,86 @@ DELETE /api/v1/watchlist/{stockCode}
 |---|---|---|
 | `WATCHLIST_LIMIT_EXCEEDED` | 409 | "관심 종목은 최대 50개까지 등록할 수 있어요" |
 | `WATCHLIST_ALREADY_EXISTS` | 409 | |
+
+### 6.4 알림함
+
+Finch 가 사용자에게 할 일을 쌓아 두는 곳이다. 홈·포트폴리오·내 정보 헤더의 뱃지가 `unreadCount` 를 그린다. (이슈 #57)
+
+#### 목록
+
+```
+GET /api/v1/inbox
+```
+
+**Response `200 OK`**
+```json
+{
+  "unreadCount": 1,
+  "items": [
+    {
+      "itemId": "record-000660-101",
+      "kind": "record",
+      "title": "SK하이닉스, 왜 담으셨나요?",
+      "summary": "체결 직후 이유를 적어 두면 AI가 이 기록을 근거로 더 맞는 추천을 해줘요.",
+      "unread": true,
+      "createdAt": "2026-09-11T09:31:00+09:00",
+      "stockCode": "000660",
+      "stockName": "SK하이닉스",
+      "tradeId": 101
+    }
+  ]
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `unreadCount` | `number` | `items` 중 `unread: true` 인 개수. 뱃지 숫자로 그대로 쓴다 |
+| `itemId` | `string` | 항목 식별자. **해석하지 않는 불투명 문자열이다** — 읽음 표시에 그대로 돌려보낸다 |
+| `kind` | `string` | `record` \| `wiki` \| `news`. 아래 표 |
+| `title` · `summary` | `string` | 서버가 완성한 문구. 화면이 다시 만들지 않는다 (§1.3 과 같은 원칙) |
+| `unread` | `boolean` | 읽음 표시 전이면 `true` |
+| `createdAt` | `string` | 항목이 생긴 시각. `record` 는 그 매수의 체결 시각 |
+| `stockCode` · `stockName` | `string` \| `null` | 연결된 종목. 지금 나오는 `record` 는 언제나 값이 있다 |
+| `tradeId` | `number` \| `null` | `record` 만 값이 있다 — 이 항목을 만든 매수 체결(§7.1 `orderId`, §8.2 `tradeId` 와 같은 값). 매수 이유를 기록할 때 **문자열로 바꿔** `linkedTradeId` 에 넣는다(§10.1). 나머지 종류는 `null` |
+
+- 정렬은 `createdAt` 내림차순이다. 페이징은 없다 — 항목이 보유 종목 수를 넘지 않는다.
+- 항목이 없으면 `{ "unreadCount": 0, "items": [] }` 다. 에러가 아니다.
+
+**항목 종류**
+
+| `kind` | 뜻 | 누르면 (프론트) | 지금 |
+|---|---|---|---|
+| `record` | 적어야 할 것 — 매수 이유 기록 요청 | "왜 담으셨나요?" 시트 | **나온다** |
+| `wiki` | 확인해야 할 것 — AI 추측 확인 요청 | 포트폴리오 위키 탭 | 나오지 않는다 — AI 추측 생성기가 없다(이슈 #52) |
+| `news` | 읽을 것 — 종목 하나의 소식 | 그 종목 상세의 AI 탭 | 나오지 않는다 — 종목별 소식의 원천이 정해지지 않았다 |
+
+**세 값 밖의 `kind` 는 내보내지 않는다.** 종류를 늘릴 때는 이 표를 먼저 고친다.
+
+**`record` 규칙** — 저장된 알림이 아니라 조회할 때마다 계산한다.
+
+- **생기는 조건**: 보유 수량이 0 보다 큰 종목 중 **위키에 `active` 논지가 없는 종목**. 한 종목에 항목 하나다.
+- **`itemId` 와 `tradeId`**: 그 종목의 **마지막 매수 체결**을 가리킨다. 같은 종목을 다시 사면 새 항목이 되어 `unread: true` 로 다시 뜬다.
+- **사라지는 조건**: 그 종목에 `active` 논지가 생기면 목록에서 빠진다 — 알림함 시트·위키 탭·AI 채팅 어느 경로로 기록했든 같다.
+  전량 매도해도 빠진다. **처리 완료를 표시하는 API 는 따로 없다.**
+- **반영 시점**: `POST`·`PUT /ai/wiki/theses`(§10.1)로 기록하면 다음 조회부터 빠진다. **AI 채팅에서 기록된 논지는 최대 5분 늦게
+  빠질 수 있다** — 백엔드가 위키 조회 결과를 5분 동안 재사용하고, 채팅 쪽 기록은 백엔드를 거치지 않아 알 수 없다.
+- **위키를 읽지 못하면**: 마지막으로 읽은 결과를 쓴다. 그것도 없으면 `record` 항목 없이 응답한다 — 이미 이유를 적은 종목에 다시
+  "왜 담으셨나요?" 를 띄우는 것보다 잠시 비는 편이 낫다. 에러를 내지 않는다.
+
+#### 읽음 표시
+
+```
+POST /api/v1/inbox/{itemId}/read
+```
+
+**Response `204 No Content`** — 본문 없음.
+
+- **멱등이다.** 이미 읽은 항목·목록에 없는 항목·지난 항목(논지가 생겨 빠진 것)도 `204` 다.
+- 읽음은 뱃지를 끄는 것뿐이다. 항목을 목록에서 없애지 않는다 — 없애는 것은 위 "사라지는 조건" 이다.
+- `itemId` 가 64자를 넘으면 `400 INVALID_REQUEST`, `detail` 은 `{ "itemId": 사유 }`.
+
+**갱신 주기** — 화면 진입 시 한 번 부르면 충분하다. 폴링한다면 60초보다 짧게 부르지 않는다(프론트 재량) —
+위 5분 재사용 때문에 짧게 불러도 결과가 거의 같다.
 
 ---
 
@@ -1330,6 +1415,7 @@ GET /internal/v1/trades?cursor=&size=100
 - 동작: 같은 종목에 `active` 논지가 있으면 그것을 `closed` 로 닫고 새로 기록한다(교체). 이력은 남고 `active` 가 둘이 되지 않는다.
   논지가 있는 종목에 `POST` 를 보내도 실패하지 않지만 이력이 한 줄 늘어난다 — 고칠 때는 `PUT` 을 쓴다.
 - 응답: `200 OK`, 기록된 논지 한 건 (§10.3 재포장).
+- `POST`·`PUT` 이 성공하면 그 종목의 알림함 `record` 항목이 다음 조회부터 빠진다 (§6.4, v0.8.9).
 
 ### 10.2 인증
 
@@ -1550,6 +1636,8 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/watchlist` | — | `sort` 열거값 밖 → `INVALID_REQUEST` |
 | POST | `/watchlist` | `STOCK_NOT_FOUND` · `WATCHLIST_ALREADY_EXISTS` · `WATCHLIST_LIMIT_EXCEEDED` | 판정 순서: 종목 존재 → 중복 → 한도. 이미 등록된 종목은 한도가 찼어도 `ALREADY_EXISTS` |
 | DELETE | `/watchlist/{stockCode}` | — | 대상이 없어도 `204` |
+| GET | `/inbox` | — | 항목 없음은 빈 `items`. **AI 위키를 읽지 못해도 에러가 아니다** — `record` 항목만 빠진다 (§6.4) |
+| POST | `/inbox/{itemId}/read` | — | **대상이 없어도 `204`** (멱등). `itemId` 64자 초과 → `INVALID_REQUEST` |
 | POST | `/orders` | `ORDER_QUANTITY_INVALID` · `STOCK_NOT_FOUND` · `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` · `ORDER_INSUFFICIENT_CASH` · `ORDER_INSUFFICIENT_QUANTITY` | 판정 순서: 멱등성 → `side` 열거값(`INVALID_REQUEST`) → 수량 0 이하 → 종목 존재 → §7.2 1~5단계. `ORDER_INSUFFICIENT_CASH`는 매수, `ORDER_INSUFFICIENT_QUANTITY`는 매도에서만 |
 | GET | `/orders/available` | `STOCK_NOT_FOUND` | `side` 열거값 밖 → `INVALID_REQUEST`. `tradable: false`의 `reason`은 `ORDER_MARKET_CLOSED` · `ORDER_STOCK_SUSPENDED` · `ORDER_PRICE_UNAVAILABLE` 중 하나이며 **HTTP 200**이다 (§7.3) |
 | GET | `/portfolio` | — | `sort` 열거값 밖 → `INVALID_REQUEST`. 보유 없음은 빈 `holdings` |
@@ -1592,6 +1680,8 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 최근 본 | GET/DELETE | `/api/v1/stocks/recent` | |
 | 최근 검색 | GET/DELETE | `/api/v1/stocks/search/recent` | |
 | 관심 종목 | GET/POST/DELETE | `/api/v1/watchlist` | |
+| 알림함 | GET | `/api/v1/inbox` | |
+| 알림함 | POST | `/api/v1/inbox/{itemId}/read` | |
 | 주문 | POST | `/api/v1/orders` | **필수** |
 | 주문 | GET | `/api/v1/orders/available` | |
 | 잔고 | GET | `/api/v1/portfolio` | |
