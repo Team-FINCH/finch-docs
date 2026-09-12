@@ -92,7 +92,7 @@
     종목별 소식의 원천이 정해지지 않았다. `record` 는 저장된 알림이 아니라 **보유 종목과 위키 논지를 대조해 조회 때마다 계산**하므로
     논지가 생기면 별도 처리 없이 목록에서 빠진다. 매수 이유 저장은 §10.1 의 `POST /ai/wiki/theses` 로 하고 알림함 전용 저장
     경로는 두지 않는다. 새 에러 코드는 없다. **기존 계약을 깨지 않는다** (이슈 #57, 티켓 236)
-  - v0.8.10 — §2.5 **테스트 로그인** 신설 (`POST /auth/test-login`). 카카오 없이 테스트 계정(1~10)으로 로그인하는 **임시 입구**다 —
+  - v0.8.10 — §2.5 **테스트 로그인** 신설 (`POST /auth/test-login`). 카카오 없이 고정 테스트 계정 1로 로그인하는 **임시 입구**다 —
     발표·평가 기간에 운영에서도 쓰고 끝나면 끈다. **설정을 켰을 때만 경로가 생기고**(기본 꺼짐, 꺼져 있으면 404), 공유 키 헤더
     `X-Test-Login-Key` 가 틀려도 같은 404 다. 응답은 §2.1 과 같다(본문 + Refresh 쿠키) — 세션 복구·재발급·로그아웃이 그대로 동작한다.
     테스트 계정은 음수 `kakaoId` 라 실제 회원 계정으로는 들어갈 수 없다. 새 에러 코드는 없다. **기존 계약을 깨지 않는다**
@@ -371,9 +371,9 @@ X-Test-Login-Key: {공유 키}
 { "testUserNo": 1 }
 ```
 
-- `testUserNo` — 테스트 계정 번호 `1`~`10`. 번호마다 계정 하나이고 처음 부르면 만들어진다(계좌 포함, 예수금 0원 — §4 충전으로 채운다).
-  닉네임은 `테스트 사용자 {번호}`, `profileImageUrl` 은 `null`.
-- 테스트 계정은 **음수 `kakaoId`**(`-1`~`-10`)로 만든다. 카카오 회원번호는 양수라 **실제 회원 계정으로는 이 경로로 들어갈 수 없다.**
+- `testUserNo` — 고정값 `1`. 모든 시연자는 같은 테스트 계정과 목업 데이터를 사용한다.
+  최초 생성 닉네임은 `테스트 사용자 1`, `profileImageUrl` 은 `null`이다. 운영 시드 적용 후 닉네임과 자산은 시연 데이터로 바뀐다.
+- 테스트 계정은 **음수 `kakaoId`**(`-1`)로 만든다. 카카오 회원번호는 양수라 **실제 회원 계정으로는 이 경로로 들어갈 수 없다.**
 
 **Response `200 OK`** — **§2.1 카카오 로그인과 같다.** 본문(`accessToken` · `isNewUser` · `user`)과 `Set-Cookie` 의 Refresh Token 이 그대로
 나간다. 그래서 프론트의 세션 복구(`POST /auth/refresh`)·재발급·로그아웃이 손대지 않고 동작한다.
@@ -382,7 +382,7 @@ X-Test-Login-Key: {공유 키}
 |---|---|
 | 설정이 꺼져 있다 | `404 RESOURCE_NOT_FOUND` (경로가 없다) |
 | `X-Test-Login-Key` 가 없거나 틀리다 | `404 RESOURCE_NOT_FOUND` — **꺼져 있을 때와 같은 응답**이다. 키 없이는 경로가 있는지조차 알 수 없다 |
-| 키는 맞고 `testUserNo` 가 없거나 1~10 밖이다 | `400 INVALID_REQUEST`, `detail` 은 `{ "testUserNo": 사유 }` — 키 대조가 먼저다 |
+| 키는 맞고 `testUserNo` 가 없거나 `1`이 아니다 | `400 INVALID_REQUEST`, `detail` 은 `{ "testUserNo": 사유 }` — 키 대조가 먼저다 |
 
 **켜는 법 (백엔드 환경변수)** — `FINCH_AUTH_TESTLOGIN_ENABLED=true`, `FINCH_AUTH_TESTLOGIN_KEY={16자 이상 비밀값}`.
 켰는데 키가 없거나 짧으면 서버가 기동에 실패한다. Swagger 문서에는 싣지 않는다.
@@ -1649,7 +1649,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 |---|---|---|---|
 | POST | `/auth/kakao` | `AUTH_KAKAO_FAILED` | 무인증. 카카오 토큰 교환 실패·카카오 사용자 조회 실패 모두 이 코드. `authorizationCode`·`redirectUri` 누락은 `INVALID_REQUEST` |
 | POST | `/auth/refresh` | `AUTH_REFRESH_TOKEN_MISSING` · `AUTH_INVALID_TOKEN` | 무인증. 쿠키 없음 → `MISSING`, 쿠키 있으나 만료·무효·회전 충돌 → `INVALID` (§2.2) |
-| POST | `/auth/test-login` | — | 무인증. **설정을 켰을 때만 존재.** 꺼짐·키 없음·키 불일치 → `404 RESOURCE_NOT_FOUND`(셋이 같은 응답), 키가 맞고 `testUserNo` 가 1~10 밖 → `INVALID_REQUEST`. 판정 순서: 키 → 번호 (§2.5) |
+| POST | `/auth/test-login` | — | 무인증. **설정을 켰을 때만 존재.** 꺼짐·키 없음·키 불일치 → `404 RESOURCE_NOT_FOUND`(셋이 같은 응답), 키가 맞고 `testUserNo` 가 `1`이 아니면 → `INVALID_REQUEST`. 판정 순서: 키 → 번호 (§2.5) |
 | POST | `/auth/logout` | — | Refresh 쿠키가 없어도 `204`. Access Token은 있어야 한다 |
 | GET | `/users/me` | — | |
 | GET | `/account` | — | |
