@@ -372,7 +372,7 @@ X-Test-Login-Key: {공유 키}
 ```
 
 - `testUserNo` — 고정값 `1`. 모든 시연자는 같은 테스트 계정과 목업 데이터를 사용한다.
-  최초 생성 닉네임은 `테스트 사용자 1`, `profileImageUrl` 은 `null`이다. 운영 시드 적용 후 닉네임과 자산은 시연 데이터로 바뀐다.
+  닉네임은 `FINCH 시연 계정`, `profileImageUrl` 은 `null`이다. 운영 시드 적용 후 자산과 활동 내역이 시연 데이터로 초기화된다.
 - 테스트 계정은 **음수 `kakaoId`**(`-1`)로 만든다. 카카오 회원번호는 양수라 **실제 회원 계정으로는 이 경로로 들어갈 수 없다.**
 
 **Response `200 OK`** — **§2.1 카카오 로그인과 같다.** 본문(`accessToken` · `isNewUser` · `user`)과 `Set-Cookie` 의 Refresh Token 이 그대로
