@@ -1,6 +1,6 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.17 (확정판)
+- 문서 버전: v0.8.18 (확정판)
 - 작성일: 2026-08-20 / 최종 수정: 2026-09-15
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
@@ -123,6 +123,10 @@
     지급·충전·출금만, 금액은 부호 포함. AI 가 시간가중수익률의 외부 현금흐름을 현재 현금에서 역산하지 않고 원장에서 읽는다.
     ② §9.2 체결마다 **`cashBalanceAfter`**(체결 직후 예수금) 추가. 수수료·세금은 미적용 정책(FR-OR-15)이라 수수료 필드는 두지 않고
     그 사실을 명시했다. **기존 계약을 깨지 않는다** — 필드와 엔드포인트가 늘어난 것뿐이다 (이슈 #276)
+  - v0.8.18 — §10.1 AI 중계에 **대화 이력 조회**(`GET /ai/chat/conversations/{conversationId}/messages`)와 **위키 확정**
+    (`POST /ai/wiki/facts/{factId}/confirm`)을 더한다 — 중계 대상 11종 → 13종. AI 서버에 이미 열려 있던 경로다(AI 이슈 #72·#81).
+    대화 이력 응답은 **다른 중계와 같은 봉투 재포장**이라 대화가 `content.messages` 에 있다 — AI 명세 §4.1 예시가 봉투 없이 적혀 있던
+    것은 AI 쪽이 문서를 고쳤다(MR !289). 새 에러 코드는 없다. **기존 계약을 깨지 않는다** (이슈 #79)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -1555,6 +1559,7 @@ GET /internal/v1/cash-flows?cursor=&size=100
 |---|---|---|
 | `POST /api/v1/ai/stocks/{stockCode}/analysis` | `POST /api/ai/v1/stocks/{ticker}/analysis` | 종목 분석 |
 | `POST /api/v1/ai/chat` | `POST /api/ai/v1/chat` | 대화 에이전트 (용어 설명 포함) |
+| `GET /api/v1/ai/chat/conversations/{conversationId}/messages` | `GET /api/ai/v1/chat/conversations/{conversation_id}/messages` | 대화 이력 조회 |
 | `POST /api/v1/ai/portfolio/diagnosis` | `POST /api/ai/v1/portfolio/diagnosis` | 포트폴리오 진단 |
 | `POST /api/v1/ai/portfolio/attribution` | `POST /api/ai/v1/portfolio/attribution` | 수익률 원인 분석 |
 | `POST /api/v1/ai/orders/preview` | `POST /api/ai/v1/orders/preview` | 주문 전 점검 |
@@ -1564,6 +1569,7 @@ GET /internal/v1/cash-flows?cursor=&size=100
 | `POST /api/v1/ai/wiki/theses` | `POST /api/ai/v1/wiki/theses` | 투자 논지 새로 기록 |
 | `PUT /api/v1/ai/wiki/theses/{stockCode}` | `PUT /api/ai/v1/wiki/theses/{ticker}` | 투자 논지 수정 |
 | `DELETE /api/v1/ai/wiki/facts/{factId}` | `DELETE /api/ai/v1/wiki/facts/{factId}` | 위키 사실 삭제 |
+| `POST /api/v1/ai/wiki/facts/{factId}/confirm` | `POST /api/ai/v1/wiki/facts/{fact_id}/confirm` | 위키 추측을 사실로 확정 |
 
 **`POST /wiki/theses` 는 v0.8.8 부터 중계한다** (이슈 #56). 원래 AI 가 대화 안에서 스스로 부르는 경로라 중계하지 않았는데(이슈 #12, #7),
 위키 탭과 알림함에서 사용자가 매수 이유를 **처음** 적는 입구가 필요해졌다. `PUT` 은 `active` 논지가 없으면 거부하므로
@@ -1576,6 +1582,16 @@ GET /internal/v1/cash-flows?cursor=&size=100
   논지가 있는 종목에 `POST` 를 보내도 실패하지 않지만 이력이 한 줄 늘어난다 — 고칠 때는 `PUT` 을 쓴다.
 - 응답: `200 OK`, 기록된 논지 한 건 (§10.3 재포장).
 - `POST`·`PUT` 이 성공하면 그 종목의 알림함 `record` 항목이 다음 조회부터 빠진다 (§6.4, v0.8.9).
+
+**대화 이력 조회와 위키 확정은 v0.8.18 부터 중계한다** (이슈 #79, AI 이슈 #72·#81). 둘 다 본문이 없고 경로 변수만 넘긴다.
+
+- **대화 이력** — 프론트가 저장해 둔 `conversationId` 로 채팅 화면을 복원한다. 응답은 **다른 중계와 같은 봉투 재포장**이다(§10.3) —
+  대화는 `content.conversationId`·`content.messages[]`(`role`·`content`·`createdAt`) 에 있고, 메시지의 `content` 는 이름만 같은 문자열
+  필드다. 조회라 `dataAsOf` 는 전부 `null`, `citations` 는 빈 배열이다. **남의 대화나 없는 id 는 빈 `messages` 이고 에러가 아니다** —
+  소유권 격리는 AI 서버가 한다. 저장 대상은 성공한 질문과 최종 답변뿐이다
+- **위키 확정** — AI 추측(`ai_inferred`)을 사용자 확인(`user_stated`)으로 승격한다. 응답은 확정된 항목 하나(§10.3 재포장, `GET /ai/wiki` 의
+  `profile[]` 한 항목과 같은 모양). 없는 id·남의 항목·삭제된 항목·편집 불가 항목은 **전부 AI 의 `400 INVALID_REQUEST` 한 갈래**다 —
+  구분하면 남의 위키 항목 존재가 드러나 AI 가 합쳤다. 논지가 아니라 성향 항목이라 알림함(§6.4)과 무관하다
 
 ### 10.2 인증
 
@@ -1806,12 +1822,14 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/transactions` | — | `type` 열거값 밖 · `cursor` 손상 · `size` 범위 밖 → `INVALID_REQUEST`. 내역 없음은 빈 `items` |
 | POST | `/ai/stocks/{stockCode}/analysis` | `AI_UPSTREAM_UNAVAILABLE` · `AI_UPSTREAM_RATE_LIMITED` · `AI_UPSTREAM_TIMEOUT` + **AI 서버 발행 코드 통과** | AI 서버 코드 목록은 [aiApiSpec §3](./aiApiSpec.md). 백엔드는 종목 존재를 미리 검사하지 않는다 — AI 서버의 `INSTRUMENT_NOT_FOUND`(404)가 그대로 내려간다. 연결 실패·타임아웃 두 코드에는 `requestId`가 없고, 401·403·429 재포장분에는 있다 (§10.4) |
 | POST | `/ai/chat` | 위와 동일 | |
+| GET | `/ai/chat/conversations/{conversationId}/messages` | 위와 동일 | 남의 대화·없는 id 는 에러가 아니라 빈 `messages` 다 (§10.1) |
 | POST | `/ai/portfolio/diagnosis` | 위와 동일 | 보유 종목 0개는 AI 서버의 `INSUFFICIENT_DATA`(409)이며 정상 거절이다 |
 | POST | `/ai/portfolio/attribution` | 위와 동일 | |
 | POST | `/ai/orders/preview` | 위와 동일 | |
 | GET | `/ai/briefing` | 위와 동일 | |
 | POST | `/ai/feedback` | 위와 동일 | 모르는 `requestId`의 처리는 AI 서버 몫이다 (프론트 contracts P14) |
 | POST | `/ai/wiki/theses` | 위와 동일 | 본문 검증은 AI 가 한다 — `ticker`·`text` 누락이나 500자 초과는 AI 의 `400 INVALID_REQUEST` 가 그대로 내려간다 |
+| POST | `/ai/wiki/facts/{factId}/confirm` | 위와 동일 | 없는 id·남의 항목·삭제된 항목·편집 불가 항목은 모두 AI 의 `400 INVALID_REQUEST` 한 갈래다 (§10.1) |
 | GET | `/internal/v1/portfolio` · `/internal/v1/trades` · `/internal/v1/cash-flows` | `AUTH_INVALID_TOKEN` · `RESOURCE_NOT_FOUND` | `X-Internal-Token` 누락·불일치 → `401 AUTH_INVALID_TOKEN`. `X-User-Id`에 해당하는 사용자 없음 → `404 RESOURCE_NOT_FOUND`. 사용자 JWT 인증은 적용되지 않는다 |
 
 **표에 없는 코드는 그 엔드포인트에서 나오지 않는다.** 구현 중 새 사유가 생기면 이 표와 §11 목록을 먼저 고치고 코드를 붙인다. 백엔드 테스트(`ErrorCodeContractTest`)가 enum 전체와 §11 목록의 일치를 검사한다.
@@ -1851,6 +1869,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 내역 | GET | `/api/v1/transactions` | |
 | AI 중계 | POST | `/api/v1/ai/stocks/{stockCode}/analysis` | |
 | AI 중계 | POST | `/api/v1/ai/chat` | |
+| AI 중계 | GET | `/api/v1/ai/chat/conversations/{conversationId}/messages` | |
 | AI 중계 | POST | `/api/v1/ai/portfolio/diagnosis` | |
 | AI 중계 | POST | `/api/v1/ai/portfolio/attribution` | |
 | AI 중계 | POST | `/api/v1/ai/orders/preview` | |
@@ -1860,6 +1879,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | AI 중계 | POST | `/api/v1/ai/wiki/theses` | |
 | AI 중계 | PUT | `/api/v1/ai/wiki/theses/{stockCode}` | |
 | AI 중계 | DELETE | `/api/v1/ai/wiki/facts/{factId}` | |
+| AI 중계 | POST | `/api/v1/ai/wiki/facts/{factId}/confirm` | |
 | AI 내부 | GET | `/internal/v1/portfolio` | |
 | AI 내부 | GET | `/internal/v1/trades` | |
 | AI 내부 | GET | `/internal/v1/cash-flows` | |
