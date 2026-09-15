@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.16 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-14
+- 문서 버전: v0.8.17 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-15
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -119,6 +119,10 @@
     진행 중 봉이 확정 봉으로 바뀌는 시각만 늦어지고 응답 모양은 그대로다. 서버 설정으로는 KIS 리미터를 실측값 2건/초로 내리고 순회
     휴식을 1초로 줄였으며, 기동 시 서비스 종목 30개의 과거 봉을 미리 채운다 — 첫 차트 조회가 더는 KIS 8회 호출을 기다리지 않는다.
     셋 다 계약 밖의 운영 설정이다 (이슈 #253)
+  - v0.8.17 — §9 AI 내부 연동에 **원장 값 둘을 더한다** (AI 요청 이슈 #80). ① §9.3 **입출금 이력** 신설(`GET /internal/v1/cash-flows`) —
+    지급·충전·출금만, 금액은 부호 포함. AI 가 시간가중수익률의 외부 현금흐름을 현재 현금에서 역산하지 않고 원장에서 읽는다.
+    ② §9.2 체결마다 **`cashBalanceAfter`**(체결 직후 예수금) 추가. 수수료·세금은 미적용 정책(FR-OR-15)이라 수수료 필드는 두지 않고
+    그 사실을 명시했다. **기존 계약을 깨지 않는다** — 필드와 엔드포인트가 늘어난 것뿐이다 (이슈 #276)
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -1476,7 +1480,8 @@ GET /internal/v1/trades?cursor=&size=100
       "side": "BUY",
       "price": 71200,
       "quantity": 10,
-      "executedAt": "2026-08-18T10:12:44+09:00"
+      "executedAt": "2026-08-18T10:12:44+09:00",
+      "cashBalanceAfter": 288000
     }
   ],
   "nextCursor": null,
@@ -1485,6 +1490,53 @@ GET /internal/v1/trades?cursor=&size=100
 ```
 
 기본 100건, 커서 기반 페이징. (명세 10.3)
+
+- `cashBalanceAfter` — 체결 직후 예수금. 체결과 짝인 원장 행의 값이다 (v0.8.17). AI 가 원장을 재생한 결과와 대조하는 검산용이다
+- **수수료·세금은 없다** (featureSpec 1장, requirementsSpec FR-OR-15). 체결 금액은 정확히 `price × quantity` 이고 그만큼 예수금이
+  움직인다. 그래서 수수료 필드를 두지 않는다
+
+### 9.3 입출금 이력 조회
+
+```
+GET /internal/v1/cash-flows?cursor=&size=100
+```
+
+```json
+{
+  "cashFlows": [
+    {
+      "entryId": 57,
+      "type": "WITHDRAWAL",
+      "amount": -100000,
+      "cashBalanceAfter": 416000,
+      "occurredAt": "2026-09-12T11:20:03+09:00"
+    },
+    {
+      "entryId": 12,
+      "type": "DEPOSIT",
+      "amount": 1000000,
+      "cashBalanceAfter": 1000000,
+      "occurredAt": "2026-09-10T14:02:11+09:00"
+    }
+  ],
+  "nextCursor": null,
+  "hasNext": false
+}
+```
+
+계좌 밖과 오간 돈, 즉 **외부 현금흐름**만 준다. 시간가중수익률의 분모에서 빼야 하는 값이다 (이슈 #80).
+
+| 필드 | 설명 |
+|---|---|
+| `entryId` | 원장 행 id. 커서의 기준이다 |
+| `type` | `INITIAL_GRANT`(계좌 개설 지급) · `DEPOSIT`(충전) · `WITHDRAWAL`(출금). **`BUY`·`SELL` 은 나오지 않는다** — 계좌 안에서 현금과 주식이 자리를 바꾸는 것이라 외부 흐름이 아니고, §9.2 로 이미 나간다 |
+| `amount` | 원장 `cash_delta` 그대로, **부호 포함**. 입금·지급은 양수, 출금은 음수. §8.2 화면용 `amount`(양수 절대값)와 의미가 다르다 |
+| `cashBalanceAfter` | 그 사건 직후 예수금 |
+| `occurredAt` | 사건 시각 (KST 오프셋) |
+
+- 최신순, 기본·최대 100건, 커서 규칙과 인증·사용자 판정은 §9.2 와 같다
+- `INITIAL_GRANT` 는 지급액 정책이 0 인 지금은 기록되지 않는다. 정책이 바뀌면 그대로 여기 나온다 — AI 는 세 유형을 구분 없이 외부 흐름으로 읽으면 된다
+- 충전은 휴장일에도 된다. `occurredAt` 이 거래일이 아닐 수 있다
 
 > **미확정**: 평가손익 같은 파생 지표를 백엔드가 함께 내려줄지 AI가 계산할지는 `[S0-5]`에서 정한다. 현재 초안은 **원본 값만 내려주고 AI가 계산**하는 쪽이다.
 
@@ -1760,7 +1812,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/ai/briefing` | 위와 동일 | |
 | POST | `/ai/feedback` | 위와 동일 | 모르는 `requestId`의 처리는 AI 서버 몫이다 (프론트 contracts P14) |
 | POST | `/ai/wiki/theses` | 위와 동일 | 본문 검증은 AI 가 한다 — `ticker`·`text` 누락이나 500자 초과는 AI 의 `400 INVALID_REQUEST` 가 그대로 내려간다 |
-| GET | `/internal/v1/portfolio` · `/internal/v1/trades` | `AUTH_INVALID_TOKEN` · `RESOURCE_NOT_FOUND` | `X-Internal-Token` 누락·불일치 → `401 AUTH_INVALID_TOKEN`. `X-User-Id`에 해당하는 사용자 없음 → `404 RESOURCE_NOT_FOUND`. 사용자 JWT 인증은 적용되지 않는다 |
+| GET | `/internal/v1/portfolio` · `/internal/v1/trades` · `/internal/v1/cash-flows` | `AUTH_INVALID_TOKEN` · `RESOURCE_NOT_FOUND` | `X-Internal-Token` 누락·불일치 → `401 AUTH_INVALID_TOKEN`. `X-User-Id`에 해당하는 사용자 없음 → `404 RESOURCE_NOT_FOUND`. 사용자 JWT 인증은 적용되지 않는다 |
 
 **표에 없는 코드는 그 엔드포인트에서 나오지 않는다.** 구현 중 새 사유가 생기면 이 표와 §11 목록을 먼저 고치고 코드를 붙인다. 백엔드 테스트(`ErrorCodeContractTest`)가 enum 전체와 §11 목록의 일치를 검사한다.
 
@@ -1810,6 +1862,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | AI 중계 | DELETE | `/api/v1/ai/wiki/facts/{factId}` | |
 | AI 내부 | GET | `/internal/v1/portfolio` | |
 | AI 내부 | GET | `/internal/v1/trades` | |
+| AI 내부 | GET | `/internal/v1/cash-flows` | |
 
 ---
 
