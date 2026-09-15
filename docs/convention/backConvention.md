@@ -128,7 +128,7 @@ domain/order/
 - `withdrawal`은 `account`와 `ledger`를 참조한다. **`deposit`을 참조하지 않는다** — 같은 4층이고,
   참조할 일도 없다(출금은 충전 건을 되돌리는 것이 아니라 잔고에서 빼는 별개 사건이다)
 - `account`는 계좌 개설 시 `ledger`를 참조한다 (`INITIAL_GRANT` 기록)
-- `ai`는 `portfolio`와 `order`를 읽어 내부 API로 노출한다 (읽기 전용, 원장을 쓰지 않는다 — featureSpec 10.1)
+- `ai`는 `portfolio`·`order`·`ledger`를 읽어 내부 API로 노출한다 (읽기 전용, 원장을 쓰지 않는다 — featureSpec 10.1)
 - `inbox`는 `portfolio`(보유) · `order`(마지막 매수) · `ai`(위키 논지)를 읽어 알림함 항목을 계산한다. 셋 중 가장 위가 5층 `ai`라
   6층이다. 알림함을 부르는 도메인은 없다 — 논지를 쓰는 중계가 알림함 캐시를 지워야 할 때도 `ai`가 자기 캐시(`WikiThesisService`)를
   지우고 `inbox`를 부르지 않는다
