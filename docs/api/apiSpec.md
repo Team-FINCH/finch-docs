@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.18 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-15
+- 문서 버전: v0.8.19 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-16
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -127,6 +127,13 @@
     (`POST /ai/wiki/facts/{factId}/confirm`)을 더한다 — 중계 대상 11종 → 13종. AI 서버에 이미 열려 있던 경로다(AI 이슈 #72·#81).
     대화 이력 응답은 **다른 중계와 같은 봉투 재포장**이라 대화가 `content.messages` 에 있다 — AI 명세 §4.1 예시가 봉투 없이 적혀 있던
     것은 AI 쪽이 문서를 고쳤다(MR !289). 새 에러 코드는 없다. **기존 계약을 깨지 않는다** (이슈 #79)
+  - v0.8.19 — §10.1 AI 중계에 **채팅 작업 생성**(`POST /ai/chat/jobs`, `202`)과 **상태 조회**(`GET /ai/chat/jobs/{jobId}`)를 더한다 —
+    중계 대상 13종 → 15종 (이슈 #84·#90, AI MR !311). 생성이 답을 기다리지 않고 돌아오므로 **사용자가 답을 기다리는 동안 다른
+    화면으로 이동할 수 있다.** 딸린 변경 셋: (1) §1.4 멱등성 키 필수 경로에 `POST /ai/chat/jobs` 추가 — 중계 경로 중 유일하고,
+    재전송이 곧 중복 과금이라서다. 백엔드 필터가 1차, AI 가 `X-Idempotency-Key` 로 2차 방어다. (2) §11.2 에 AI 의
+    `404 RESOURCE_NOT_FOUND` 통과 — 없는·지난·남의 작업 한 갈래다. **실패한 작업은 에러가 아니라 `200` 본문의 `content.error`** 다.
+    (3) AI 중계 타임아웃 **90초 → 60초**, 채팅 작업 2종만 10초 — 90초는 Cloudflare 한계(약 100초)와 10초밖에 차이가 없어 왕복에
+    먹혔고, 프론트가 우리 JSON 봉투 대신 HTML 504 를 받고 있었다 (이슈 #87). 기존 `POST /ai/chat` 은 프론트 전환 뒤 2주까지 유지된다
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -224,7 +231,7 @@ HTTP/1.1 200 OK
 
 ### 1.4 멱등성 (명세 11장)
 
-**주문과 출금**은 멱등성 키가 필수다. **키는 클라이언트가 UUID v4로 생성한다** — 같은 버튼 클릭의 재시도는 같은 키, 새 클릭은 새 키.
+**주문·출금·AI 채팅 작업 생성**은 멱등성 키가 필수다. **키는 클라이언트가 UUID v4로 생성한다** — 같은 버튼 클릭의 재시도는 같은 키, 새 클릭은 새 키.
 
 **충전 확정(`POST /deposits/confirm`)은 이 헤더를 쓰지 않는다.** 멱등의 기준이 **PG 가 발급한 `paymentKey`** 이고, 같은 키로 다시 오면 `200` 과 최초 응답이 나간다 (§4.4). 클라이언트가 만든 UUID 로는 판정할 수 없다 — 결제창을 거쳐 돌아온 요청이라 최초 호출과 다른 화면·다른 세션일 수 있다.
 
@@ -232,7 +239,13 @@ HTTP/1.1 200 OK
 |---|---|
 | `POST /orders` | `Idempotency-Key` 헤더 (필수) |
 | `POST /withdrawals` | `Idempotency-Key` 헤더 (필수) |
+| `POST /ai/chat/jobs` | `Idempotency-Key` 헤더 (필수, v0.8.19) |
 | `POST /deposits/confirm` | `paymentKey` (헤더 없음) |
+
+**AI 채팅 작업 생성이 목록에 있는 이유** (v0.8.19, 이슈 #84·#90) — 부를 때마다 LLM 이 도는 새 작업이 생기므로 재전송이 곧 중복 과금이다.
+재전송은 최초의 `202` 와 같은 `jobId` 를 그대로 받으므로 프론트는 같은 작업을 계속 폴링하면 된다. 백엔드 필터가 1차 방어이고,
+**AI 서버에도 같은 키로 2차 방어가 있다** — 백엔드가 `X-Idempotency-Key` 로 넘기고, 우리 키 저장소(Redis)가 비어 필터가 뚫려도
+AI 가 같은 `jobId` 를 돌려준다. 작업 **상태 조회는 `GET` 이라 키가 없다** — 2초마다 오는 폴링에 키를 요구하면 매번 새 UUID 를 지어내야 한다.
 
 ```http
 Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
@@ -1553,12 +1566,18 @@ GET /internal/v1/cash-flows?cursor=&size=100
 **AI 중계는 모두 단발 요청/응답이다. SSE 등 스트리밍은 하지 않는다** ([AI 명세 §2.5](../../ai/docs/api-spec.md) — "스트리밍을 하려면 백엔드가 스트리밍 프록시를 먼저 만들어야 한다. 계획에 없는 작업이다").
 `POST /api/v1/ai/chat`처럼 응답이 오래 걸릴 수 있는 경로도 단발이다 — 프론트는 응답이 올 때까지 로딩 상태로 기다린다. (이슈 #12)
 
+**다만 채팅은 v0.8.19 부터 기다리지 않는 길이 생겼다** (§10.1 채팅 작업 2종, 이슈 #84). 단발 요청/응답이라는 규칙은 그대로다 —
+작업을 만드는 요청도, 상태를 묻는 요청도 각각 한 번에 끝난다. 달라진 것은 **생성이 답을 기다리지 않고 `202` 로 돌아온다**는 것이고,
+프론트는 로딩 화면에 묶이는 대신 `jobId` 를 들고 다른 화면으로 이동했다가 돌아와 이어볼 수 있다. 스트리밍은 여전히 하지 않는다.
+
 ### 10.1 경로 매핑
 
 | 프론트가 부르는 경로 | 중계 대상 (AI 서버) | 용도 |
 |---|---|---|
 | `POST /api/v1/ai/stocks/{stockCode}/analysis` | `POST /api/ai/v1/stocks/{ticker}/analysis` | 종목 분석 |
 | `POST /api/v1/ai/chat` | `POST /api/ai/v1/chat` | 대화 에이전트 (용어 설명 포함) |
+| `POST /api/v1/ai/chat/jobs` | `POST /api/ai/v1/chat/jobs` | 채팅 작업 생성 (202) |
+| `GET /api/v1/ai/chat/jobs/{jobId}` | `GET /api/ai/v1/chat/jobs/{job_id}` | 채팅 작업 상태·결과 |
 | `GET /api/v1/ai/chat/conversations/{conversationId}/messages` | `GET /api/ai/v1/chat/conversations/{conversation_id}/messages` | 대화 이력 조회 |
 | `POST /api/v1/ai/portfolio/diagnosis` | `POST /api/ai/v1/portfolio/diagnosis` | 포트폴리오 진단 |
 | `POST /api/v1/ai/portfolio/attribution` | `POST /api/ai/v1/portfolio/attribution` | 수익률 원인 분석 |
@@ -1592,6 +1611,28 @@ GET /internal/v1/cash-flows?cursor=&size=100
 - **위키 확정** — AI 추측(`ai_inferred`)을 사용자 확인(`user_stated`)으로 승격한다. 응답은 확정된 항목 하나(§10.3 재포장, `GET /ai/wiki` 의
   `profile[]` 한 항목과 같은 모양). 없는 id·남의 항목·삭제된 항목·편집 불가 항목은 **전부 AI 의 `400 INVALID_REQUEST` 한 갈래**다 —
   구분하면 남의 위키 항목 존재가 드러나 AI 가 합쳤다. 논지가 아니라 성향 항목이라 알림함(§6.4)과 무관하다
+
+**채팅 작업 2종은 v0.8.19 부터 중계한다** (이슈 #84·#90, [AI 명세 §4.2](../../ai/docs/api-spec.md)).
+생성이 답을 기다리지 않고 돌아오므로 **사용자가 답을 기다리는 동안 다른 화면으로 이동할 수 있다** — 그것이 #84 의 요구였다.
+
+- **생성** — `POST /api/v1/ai/chat/jobs`. 본문은 `POST /ai/chat` 과 같다(`question`·`conversationId`). 응답은 **`202 Accepted`** 와
+  `content.jobId`·`content.status`(`queued`)·`content.conversationId` 다. 다른 중계와 같은 봉투 재포장이다(§10.3).
+  **`Idempotency-Key` 헤더가 필수다** (§1.4) — 중계 경로 중 유일하다. 부를 때마다 LLM 이 도는 새 작업이 생겨 재전송이 곧 중복 과금이다.
+- **조회** — `GET /api/v1/ai/chat/jobs/{jobId}`. `content.status` 가 `queued` → `running` → `completed` | `failed` 이고,
+  `completed` 면 `content.result` 가 **`POST /ai/chat` 의 `content` 와 같은 모양**이다(`conversationId`·`answer`·`toolsUsed`).
+  **권장 폴링 간격 2초.** 이 경로는 AI 쪽 호출 한도에 걸리지 않는다 — LLM 을 부르지 않기 때문이다.
+- **실패한 작업도 `200`** 이다. `content.result` 가 `null` 이고 `content.error` 에 `code`·`message`·`retryable` 이 담긴다.
+  `retryable` 은 `LLM_TIMEOUT`·`RETRIEVAL_FAILED` 만 `true` 다 — 나머지(`GUARDRAIL_BLOCKED`·`INSUFFICIENT_DATA`)는 다시 눌러도 같은 결과다.
+  **HTTP 에러가 아니라 본문에 담는 이유**는 조회 자체는 성공했기 때문이고, 에러로 내리면 §10.4 통과 규칙이 그 셋을 벗겨 버린다.
+- **없는 작업·지난 작업·남의 작업은 전부 AI 의 `404 RESOURCE_NOT_FOUND` 한 갈래**다 — 위키 확정과 같이 존재를 드러내지 않는다.
+  작업 보존 기간은 **24시간**이고, AI 서버가 재시작돼도 진행 중이던 작업은 사라지지 않는다(Postgres 에 적힌다).
+- **기존 `POST /ai/chat` 은 당분간 함께 뜬다.** AI 쪽에서 내부적으로 작업을 만들어 최대 55초 기다렸다 답만 돌려주는 껍데기가 됐고,
+  넘기면 `504 LLM_TIMEOUT` 이지만 작업은 끝까지 돌아 이력과 위 조회에 남는다. 프론트 전환 MR 머지 뒤 2주 후 제거한다.
+
+> **타임아웃이 넷 겹쳐 있다** (이슈 #87). `AI 동기 /chat 55초 < 백엔드 60초 < Cloudflare 약 100초` 순서이고 안쪽이 먼저 터져야 한다.
+> 백엔드가 55초보다 먼저 끊으면 AI 가 이미 만든 답을 버리는 것이고(그 호출의 비용은 나간 뒤다), 100초를 넘기면 Cloudflare 가
+> 먼저 끊어 프론트가 우리 JSON 봉투가 아니라 **HTML 504** 를 받는다. v0.8.18 까지의 90초는 그 사이가 10초뿐이라 왕복에 먹혔다.
+> 채팅 작업 2종은 LLM 을 기다리지 않으므로 **10초**를 쓴다 (`finch.ai.quick-timeout`).
 
 ### 10.2 인증
 
@@ -1821,7 +1862,9 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/portfolio` | — | `sort` 열거값 밖 → `INVALID_REQUEST`. 보유 없음은 빈 `holdings` |
 | GET | `/transactions` | — | `type` 열거값 밖 · `cursor` 손상 · `size` 범위 밖 → `INVALID_REQUEST`. 내역 없음은 빈 `items` |
 | POST | `/ai/stocks/{stockCode}/analysis` | `AI_UPSTREAM_UNAVAILABLE` · `AI_UPSTREAM_RATE_LIMITED` · `AI_UPSTREAM_TIMEOUT` + **AI 서버 발행 코드 통과** | AI 서버 코드 목록은 [aiApiSpec §3](./aiApiSpec.md). 백엔드는 종목 존재를 미리 검사하지 않는다 — AI 서버의 `INSTRUMENT_NOT_FOUND`(404)가 그대로 내려간다. 연결 실패·타임아웃 두 코드에는 `requestId`가 없고, 401·403·429 재포장분에는 있다 (§10.4) |
-| POST | `/ai/chat` | 위와 동일 | |
+| POST | `/ai/chat` | 위와 동일 | AI 가 내부적으로 작업을 만들어 최대 55초 기다린다. 넘기면 AI 의 `504 LLM_TIMEOUT`(`detail.jobId`)이고 작업은 계속 돌아 §10.1 조회에 남는다 |
+| POST | `/ai/chat/jobs` | 위와 동일 + `IDEMPOTENCY_KEY_REQUIRED` · `IDEMPOTENCY_IN_PROGRESS` · `IDEMPOTENCY_CONFLICT` | 멱등성 헤더 필수 (§1.4). 성공은 **`202`** 다. 본문 검증은 AI 가 한다 |
+| GET | `/ai/chat/jobs/{jobId}` | 위와 동일 + **AI 의 `404 RESOURCE_NOT_FOUND` 통과** | 없는 작업·24시간 지난 작업·남의 작업이 한 갈래다. **실패한 작업은 에러가 아니라 `200` 본문의 `content.error`** 다 (§10.1) |
 | GET | `/ai/chat/conversations/{conversationId}/messages` | 위와 동일 | 남의 대화·없는 id 는 에러가 아니라 빈 `messages` 다 (§10.1) |
 | POST | `/ai/portfolio/diagnosis` | 위와 동일 | 보유 종목 0개는 AI 서버의 `INSUFFICIENT_DATA`(409)이며 정상 거절이다 |
 | POST | `/ai/portfolio/attribution` | 위와 동일 | |
@@ -1869,6 +1912,8 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | 내역 | GET | `/api/v1/transactions` | |
 | AI 중계 | POST | `/api/v1/ai/stocks/{stockCode}/analysis` | |
 | AI 중계 | POST | `/api/v1/ai/chat` | |
+| AI 중계 | POST | `/api/v1/ai/chat/jobs` | **필수** |
+| AI 중계 | GET | `/api/v1/ai/chat/jobs/{jobId}` | |
 | AI 중계 | GET | `/api/v1/ai/chat/conversations/{conversationId}/messages` | |
 | AI 중계 | POST | `/api/v1/ai/portfolio/diagnosis` | |
 | AI 중계 | POST | `/api/v1/ai/portfolio/attribution` | |
