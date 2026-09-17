@@ -1,7 +1,7 @@
 # 백엔드 API 명세서
 
-- 문서 버전: v0.8.20 (확정판)
-- 작성일: 2026-08-20 / 최종 수정: 2026-09-16
+- 문서 버전: v0.8.21 (확정판)
+- 작성일: 2026-08-20 / 최종 수정: 2026-09-17
 - 기준 문서: [기능 명세서 v2.4](../spec/featureSpec.md)
 - 범위: MVP 백엔드 API 전체. 프론트엔드가 Mock을 만들 수 있는 수준의 계약을 목표로 한다.
 - 변경 이력:
@@ -140,6 +140,13 @@
     같은 절에 **시세 셋이 `null` 일 수 있다**는 것과 **두 필드가 폴링으로 갱신되지 않는다**는 것을 명문화했다 — 앞은 프론트가
     회신을 기다리던 항목이고(§5.4 와 같은 캐시라 미스면 `null`), 뒤는 거래정지가 장중에 걸려도 화면 재진입까지 반영되지 않는다는 뜻이다.
     **기존 계약을 깨지 않는다** — 필드를 더하기만 한다
+  - v0.8.21 — §10.1 `DELETE /ai/wiki/facts/{factId}` 의 **`reason` 쿼리를 중계한다** (이슈 #53·#41, AI MR !140).
+    AI 와 프론트는 이미 붙어 있었고 **중계만 이 파라미터를 버리고 있었다** — 사용자가 AI 추측에 "아니에요" 를 눌러도
+    AI 기록에는 전부 `user_deleted` 로 남아 `guess_rejected` 와 구분되지 않았다. 거절당한 추측을 다시 제안하지 않으려면
+    그 분포가 필요한데, 중계가 막혀 있는 동안의 것은 나중에 되살릴 수 없다. 딸린 변경 둘: (1) §11.2 에
+    `DELETE /ai/wiki/facts/{factId}` 행 추가 — 열거값 밖의 `reason` 은 AI 의 `400 INVALID_REQUEST` 통과다.
+    (2) 기본값은 **AI 쪽 한 곳**에 둔다고 명문화 — 백엔드는 쿼리가 비면 비운 채 넘긴다.
+    **기존 계약을 깨지 않는다** — 선택 파라미터이고, 안 보내면 지금과 같이 `user_deleted` 다
 
 > **이 문서의 성격**
 > 공통 API 규격(0-5)의 확정 내용을 담은 문서다. 프론트·AI 파트와 어긋나면 이 문서가 기준이며, 수정은 백엔드 파트가 한다.
@@ -1634,6 +1641,17 @@ GET /internal/v1/cash-flows?cursor=&size=100
   `profile[]` 한 항목과 같은 모양). 없는 id·남의 항목·삭제된 항목·편집 불가 항목은 **전부 AI 의 `400 INVALID_REQUEST` 한 갈래**다 —
   구분하면 남의 위키 항목 존재가 드러나 AI 가 합쳤다. 논지가 아니라 성향 항목이라 알림함(§6.4)과 무관하다
 
+**`DELETE /wiki/facts/{factId}` 는 `reason` 쿼리를 그대로 넘긴다** (v0.8.21, 이슈 #53·#41, AI MR !140).
+값은 `user_deleted` 와 `guess_rejected` 둘뿐이다 — 앞은 확정된 사실을 사용자가 지운 것이고, 뒤는 **AI 추측에 "아니에요" 로 답한 것**이다.
+같은 삭제 버튼이 아니라 사용자가 누른 버튼이 다르고, AI 가 그 분포로 추측 품질을 본다.
+
+- **안 보내도 된다 — AI 가 `user_deleted` 로 적는다.** 백엔드는 기본값을 채우지 않고 쿼리를 비운 채 넘긴다.
+  기본값이 두 곳에 있으면 한쪽만 바뀌었을 때 어긋나므로, 기본값은 AI 쪽 한 곳에 둔다
+- **열거값 밖의 값은 AI 의 `400 INVALID_REQUEST`** 가 그대로 내려간다 (§10.4 통과, §11.2). 백엔드가 미리 보지 않는다 —
+  다른 중계와 같은 규칙이다(§10 "검증은 AI 가 한다")
+- 응답은 다른 중계와 같은 봉투 재포장이고(§10.3), `content` 에 `id`·`deletedAt`·`reason`(저장된 사유)이 실린다
+- 브리핑의 `date` 와 같이 **해석 없이 통과시키는 쿼리**다. 중계가 아는 쿼리 파라미터는 이 둘뿐이다
+
 **채팅 작업 2종은 v0.8.19 부터 중계한다** (이슈 #84·#90, [AI 명세 §4.2](../../ai/docs/api-spec.md)).
 생성이 답을 기다리지 않고 돌아오므로 **사용자가 답을 기다리는 동안 다른 화면으로 이동할 수 있다** — 그것이 #84 의 요구였다.
 
@@ -1894,6 +1912,7 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 | GET | `/ai/briefing` | 위와 동일 | |
 | POST | `/ai/feedback` | 위와 동일 | 모르는 `requestId`의 처리는 AI 서버 몫이다 (프론트 contracts P14) |
 | POST | `/ai/wiki/theses` | 위와 동일 | 본문 검증은 AI 가 한다 — `ticker`·`text` 누락이나 500자 초과는 AI 의 `400 INVALID_REQUEST` 가 그대로 내려간다 |
+| DELETE | `/ai/wiki/facts/{factId}` | 위와 동일 | 열거값 밖의 `reason` · 없는 id · 남의 항목은 모두 AI 의 `400 INVALID_REQUEST` 다 (§10.1). 백엔드는 `reason` 을 보지 않고 넘긴다 |
 | POST | `/ai/wiki/facts/{factId}/confirm` | 위와 동일 | 없는 id·남의 항목·삭제된 항목·편집 불가 항목은 모두 AI 의 `400 INVALID_REQUEST` 한 갈래다 (§10.1) |
 | GET | `/internal/v1/portfolio` · `/internal/v1/trades` · `/internal/v1/cash-flows` | `AUTH_INVALID_TOKEN` · `RESOURCE_NOT_FOUND` | `X-Internal-Token` 누락·불일치 → `401 AUTH_INVALID_TOKEN`. `X-User-Id`에 해당하는 사용자 없음 → `404 RESOURCE_NOT_FOUND`. 사용자 JWT 인증은 적용되지 않는다 |
 
