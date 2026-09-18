@@ -95,6 +95,9 @@ MVP 는 **단일 서버(EC2)** 에 올린다. 현재 두 가지 형태가 함께
 
 `docs/api/apiSpec.md` 에 적힌 39개 엔드포인트 전부에 요청을 보내 응답 코드를 봤다 (2026-09-10 측정).
 
+아래 주소는 **측정 당시의 것**이라 그대로 둔다. 다시 돌릴 때는 `https://finchapp.org` 를 쓴다.
+옛 주소도 같은 서비스를 계속 받으므로 결과는 달라지지 않는다 (`infra/README.md` '주소가 둘이다').
+
 ```
 while read -r m p; do
   u=$(printf '%s' "$p" | sed -e 's/{stockCode}/005930/' -e 's/{paymentId}/1/' \

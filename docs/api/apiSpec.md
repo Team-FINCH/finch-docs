@@ -1996,6 +1996,9 @@ AI 서버가 발행하는 코드(`INSUFFICIENT_DATA`, `GUARDRAIL_BLOCKED`, `RETR
 방법은 **응답 코드만 본다.** 인증 없이 요청하면 401 이 오는데, 그것이 라우트가 있다는 증거다 —
 없으면 Spring 이 404 를 낸다.
 
+아래 주소는 **측정 당시의 것**이라 그대로 둔다. 다시 돌릴 때는 `https://finchapp.org` 를 쓴다.
+옛 주소도 같은 서비스를 계속 받으므로 결과는 달라지지 않는다 (`infra/README.md` '주소가 둘이다').
+
 ```sh
 while read -r m p; do
   u=$(printf '%s' "$p" | sed -e 's/{stockCode}/005930/' -e 's/{paymentId}/1/'                               -e 's/{factId}/1/'    -e 's/{keywordId}/1/')
