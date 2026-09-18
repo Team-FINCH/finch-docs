@@ -80,10 +80,15 @@ MVP 는 **단일 서버(EC2)** 에 올린다. 현재 두 가지 형태가 함께
 
 | 형태 | 용도 | 구성 |
 |---|---|---|
-| Docker Compose | 현재 운영 중인 개발/시연 사이트 | nginx, backend, ai, PostgreSQL 2개, Redis |
-| k3s (쿠버네티스) | 커트오버 대상 (FINCH-136, 목표 2026-09-17) | `finch` 네임스페이스(앱) + `finch-observability`(관측) |
+| **k3s (쿠버네티스)** | **운영. 2026-09-11 커트오버 완료** | `finch` 네임스페이스(앱) + `finch-observability`(관측) |
+| Docker Compose | 롤백 경로. Jenkins 와 gitlab-runner 는 클러스터 밖 compose 에 남는다 | nginx, backend, ai, PostgreSQL 2개, Redis |
 
-커트오버가 끝나면 compose 는 롤백 경로로만 남는다.
+배포는 Helm 이다. Jenkins 가 master 머지마다 변경 파트를 감지해 이미지를 빌드하고
+`helm upgrade --install finch ... --atomic` 으로 올린다 (`Jenkinsfile:193`).
+이미지 태그는 `latest` 가 아니라 **그 파트를 마지막으로 건드린 커밋 해시**다.
+
+트래픽은 Cloudflare Tunnel 이 받아 k3s Ingress(nginx)로 넘긴다. 서비스 주소는
+`finchapp.org` 이고, 지급받은 `finchapp.org` 도 같은 서비스를 계속 받는다.
 
 ---
 
@@ -119,7 +124,7 @@ docker exec finch-ai python -c "import urllib.request,json; \
 
 ### 3.2 화면은 라우터 정의로 확인했다
 
-`frontend/src/app/router.tsx` 와 `frontend/src/shared/config/routes.ts` 를 대조했다. 라우트 20개가 실제 페이지 컴포넌트에 연결돼 있고, **`RoutePlaceholder` 를 쓰는 것은 `/recent`(최근 본 종목) 하나뿐이다.**
+`frontend/src/app/router.tsx` 와 `frontend/src/shared/config/routes.ts` 를 대조했다. **라우트 19개가 전부 실제 페이지 컴포넌트에 연결돼 있다.** 자리표시자는 하나도 없다 — `RoutePlaceholder` 컴포넌트 자체가 2026-09-17 에 삭제됐다. 여기에 404 라우트가 하나 더 있다.
 
 관심 종목은 별도 라우트가 없다. `HomePage` 안의 요약 목록과 온보딩 화면에서 처리한다 — 화면이 없는 것이 아니라 홈에 포함된 형태다.
 
@@ -204,7 +209,7 @@ Jira 는 완료 156건, 미완료 60건이다. 그런데 **이 숫자는 구현 
 |---|---|---|---|---|---|
 | FR-WL-01 | 종목 상세 진입 시 최근 본 종목에 자동 기록한다 | 최대 30건 FIFO 다 | MVP | BE, FE | 구현 |
 | FR-WL-02 | 같은 종목을 다시 보면 최상단으로 갱신한다 | 목록에 중복이 없다 | MVP | BE | 구현 |
-| FR-WL-03 | 최근 본 종목을 개별, 전체 삭제한다 | 서버에 계정 기준으로 저장된다 | MVP | BE, FE | 구현(API), 자리표시자(화면) |
+| FR-WL-03 | 최근 본 종목을 개별, 전체 삭제한다 | 서버에 계정 기준으로 저장된다 | MVP | BE, FE | 구현 |
 | FR-WL-04 | 관심 종목을 토글로 등록, 해제한다 | 최대 50개다 | MVP필수 | BE, FE | 구현 |
 | FR-WL-05 | 50개 초과 시 안내한다 | "관심 종목은 최대 50개까지 등록할 수 있어요" | MVP | BE, FE | 구현 |
 | FR-WL-06 | 보유 중 종목에 "보유" 뱃지를 붙인다 | 관심 목록에서 보유 여부가 구분된다 | MVP | FE | 구현 |
@@ -212,7 +217,9 @@ Jira 는 완료 156건, 미완료 60건이다. 그런데 **이 숫자는 구현 
 | FR-WL-08 | 온보딩에서 관심 종목을 담게 한다 | 하나만 담으면 데일리 브리핑이 켜진다 | MVP | FE | 구현 |
 | FR-WL-09 | 관심 종목 그룹과 순서 편집 | — | 확장 | — | 미구현 |
 
-**FR-WL-03 은 이 문서에서 유일하게 화면이 자리표시자인 항목이다.** API 는 배포돼 있고(`GET/DELETE /api/v1/stocks/recent`) 홈에서 일부 노출되지만, `/recent` 전용 화면은 `RoutePlaceholder` 다.
+**FR-WL-03 의 전용 화면은 만들지 않기로 확정했다** (2026-09-17). API 는 배포돼 있고(`GET/DELETE /api/v1/stocks/recent`) 최근 본 종목은 **탐색 화면**(`SearchPage`, 검색어 2글자 미만일 때의 탐색 상태)에 최근 검색어와 나란히 있다. 같은 목록을 두 화면에 두지 않는다.
+
+같은 날 `/recent` 라우트와 `RoutePlaceholder` 컴포넌트를 지웠다 — 그 화면에는 탭 바도 뒤로가기도 없어 들어가면 나올 길이 없었다 (`89d9359`).
 
 ### 4.5 시세와 차트 (FR-QT)
 
@@ -223,10 +230,18 @@ Jira 는 완료 156건, 미완료 60건이다. 그런데 **이 숫자는 구현 
 | FR-QT-03 | 캔들 차트 1종을 제공한다 | 기간 탭으로 봉 종류를 바꾼다 | MVP필수 | BE, FE | 구현 |
 | FR-QT-04 | 시세 갱신 시각을 표시한다 | 사용자가 값이 언제 것인지 알 수 있다 | MVP | FE | 구현 |
 | FR-QT-05 | 외부 시세 호출은 중앙에서 한 번 하고 내부로 배포한다 | 각 서비스가 개별 호출하지 않는다. 호출 제한이 앱키 단위이기 때문이다 | MVP필수 | BE | 구현 |
-| FR-QT-06 | 시세 수신 실패 시 허용 범위를 넘으면 주문을 막는다 | 주문 버튼 비활성 + "시세를 불러올 수 없어 주문이 제한됩니다" | MVP | BE, FE | 미구현 |
+| FR-QT-06 | 시세 수신 실패 시 허용 범위를 넘으면 주문을 막는다 | 주문 버튼 비활성 + "시세를 불러올 수 없어 주문이 제한됩니다" | MVP | BE, FE | 구현 |
 | FR-QT-07 | 분봉 차트, 보조지표, 크로스헤어 | — | 확장 | — | 미구현 |
 
-**FR-QT-06 은 미구현이다** (`FINCH-54` 시세, AI 장애 fallback). 시연 시나리오상 외부 API 가 죽는 상황을 재현하지 않으면 드러나지 않지만, **드러나면 주문이 잘못된 가격으로 체결될 수 있는 항목이라 남은 기간의 우선 처리 대상이다.**
+**FR-QT-06 은 구현됐다.** 허용 범위는 `finch.price.stale-after`(종목 10초, 지수 60초)이고, `OrderValidator` 가 체결 직전에 다시 읽어 값이 없거나 `stale` 이면 거절한다.
+
+```java
+backend/.../order/service/OrderValidator.java:64
+  if (price.currentPrice() == null || price.stale()) {
+      return Optional.of(new Rejection(OrderErrorCode.ORDER_PRICE_UNAVAILABLE, null));
+```
+
+`ORDER_PRICE_UNAVAILABLE(503, "시세를 불러올 수 없어 주문이 제한됩니다")` 가 판정 기준의 문구 그대로다. **값이 없어도, 있어도 `stale` 이면 거절이다** — 옛 값으로 체결되는 경로가 없다.
 
 ### 4.6 매매 (FR-OR)
 
@@ -341,7 +356,7 @@ MVP 대상은 사용자 대면 기능 6종이다. 응답 계약은 `docs/api/aiA
 | NFR-19 | AI 근거 데이터가 비면 경보한다 | 적재 항목별로 원인이 구분되어 알림에 실린다 | MVP | 구현, 미가동 |
 | NFR-20 | 지표, 로그, 대시보드를 수집한다 | Prometheus, Loki, Grafana 가 돈다 | MVP | 구현 |
 | NFR-21 | 호스트 로그가 무한히 자라지 않는다 | logrotate 가 주 1회 4세대로 돌린다 | MVP | 구현 |
-| NFR-22 | 시세와 AI 장애 시 fallback 을 둔다 | 허용 범위 내 마지막 값 사용, 초과 시 기능 제한 | MVP | 미구현 |
+| NFR-22 | 시세와 AI 장애 시 fallback 을 둔다 | 허용 범위 내 마지막 값 사용, 초과 시 기능 제한 | MVP | 구현 |
 
 **NFR-13 은 2026-09-10 에 사고로 드러난 항목이다.** `/assets/` 에 30일 `immutable` 을 걸면서 그 짝인 `index.html` 에 지시자를 두지 않아, 브라우저가 휴리스틱으로 옛 `index.html` 을 재사용하면 옛 번들이 계속 돌았다. 오류도 콘솔 흔적도 없이 "배포했는데 옛 화면" 이 된다.
 
@@ -384,7 +399,7 @@ MVP 대상은 사용자 대면 기능 6종이다. 응답 계약은 `docs/api/aiA
 
 **외부 호출 구조 원칙.** 앱키를 팀이 공유하면 호출 제한도 공유된다. 각 서비스가 개별 호출하지 않고 **중앙에서 한 번 호출해 내부로 배포한다.** 호출 제한이 앱키 단위이므로 필요하면 키를 풀로 들고 종목을 나눠 호출할 수 있게 설계한다.
 
-**EIF-01 과 EIF-04 는 단일 실패점이다.** 카카오 OAuth 가 죽으면 아무도 들어올 수 없고, GMS 가 죽으면 AI 기능이 전부 멈춘다. NFR-22(fallback)가 미구현인 상태에서 EIF-04 의 위험이 가장 크다.
+**EIF-01 과 EIF-04 는 단일 실패점이다.** 카카오 OAuth 가 죽으면 아무도 들어올 수 없고, GMS 가 죽으면 AI 기능이 전부 멈춘다. 시세 쪽은 NFR-22 로 막았지만 — 값이 낡으면 주문을 거절한다 — **AI 쪽은 막을 수단이 없다.** 생성이 실패하면 화면이 안내 문구로 대체될 뿐이다.
 
 ---
 
@@ -445,7 +460,7 @@ MVP 대상은 사용자 대면 기능 6종이다. 응답 계약은 `docs/api/aiA
 | FR-AI-10 | `POST /api/v1/ai/feedback` |
 | FR-AI-11 | `GET /api/v1/ai/wiki`, `PUT /api/v1/ai/wiki/theses/{stockCode}`, `DELETE /api/v1/ai/wiki/facts/{factId}` |
 
-### 8.2 화면 (20개 라우트)
+### 8.2 화면 (19개 라우트 + 404)
 
 | 라우트 | 화면 | 요구사항 | 상태 |
 |---|---|---|---|
@@ -454,7 +469,6 @@ MVP 대상은 사용자 대면 기능 6종이다. 응답 계약은 `docs/api/aiA
 | `/onboarding` | 온보딩 (관심 종목 선택) | FR-WL-08 | 구현 |
 | `/` | 홈 | FR-PF-01, FR-WL-04~07, FR-AI-04, 06 | 구현 |
 | `/search` | 종목 검색 | FR-ST-01~06 | 구현 |
-| `/recent` | 최근 본 종목 | FR-WL-03 | **자리표시자** |
 | `/stocks/:stockCode` | 종목 상세 | FR-QT-01, 03, 04, FR-AI-01 | 구현 |
 | `/stocks/:stockCode/order` | 주문 | FR-OR-04, 05, 11, 13, FR-AI-05 | 구현 |
 | `/portfolio` | 포트폴리오 | FR-PF-01~04, FR-AI-03 | 구현 |
@@ -474,15 +488,12 @@ MVP 대상은 사용자 대면 기능 6종이다. 응답 계약은 `docs/api/aiA
 
 | ID | 요구사항 | 관련 티켓 | 판단 |
 |---|---|---|---|
-| FR-WL-03 | 최근 본 종목 전용 화면 | — | API 는 있고 화면만 자리표시자다. 홈에서 일부 대체된다 |
-| FR-QT-06 | 시세 실패 시 주문 제한 | FINCH-54 | **위험도 높음.** 드러나면 잘못된 가격으로 체결될 수 있다 |
-| NFR-22 | 시세, AI 장애 fallback | FINCH-54 | FR-QT-06 과 같은 티켓이다. EIF-04(GMS) 단일 실패점과 맞물린다 |
 | NFR-08 | 부하 측정 | FINCH-58, 62 | 시연 규모에서는 드러나지 않을 수 있다 |
 | NFR-09 | 자원 상한 실측 | FINCH-59 | 현재 상한은 추정값이다 |
 | NFR-18 | 배치 실패 알림 | FINCH-216 | **구현, 미가동.** `notify-lib.sh` 는 서버에 있으나 `/etc/finch/notify-webhook` 가 없어 알림이 건너뛰어진다 |
 | NFR-19 | AI 적재 경보 | FINCH-187 | **구현, 미가동.** 차트는 master 에 있으나 관측 차트가 배포되지 않았고 `alert-webhook` Secret 도 없다 |
 
-**남은 기간의 우선순위는 FR-QT-06 과 NFR-22 다.** 나머지는 시연에서 드러나지 않을 가능성이 크지만, 이 둘은 외부 API 가 흔들리는 순간 사용자에게 잘못된 값을 보여주는 종류다.
+**남은 기간의 우선순위는 NFR-18, NFR-19(배치 실패와 적재 경보)다.** 코드는 있는데 `/etc/finch/notify-webhook` 이 없어 알림이 조용히 건너뛰어진다 — 시연 중 적재가 실패해도 아무도 모르는 상태다. 파일 하나를 놓으면 둘 다 살아난다.
 
 **NFR-18 과 NFR-19 는 코드가 아니라 설정이 남았다.** 웹훅 URL 을 `/etc/finch/notify-webhook` (600 root) 에 넣고, 그 파일로 쿠버네티스 Secret 을 만들면 둘이 함께 살아난다. URL 은 시크릿이라 저장소나 문서에 적지 않는다.
 
