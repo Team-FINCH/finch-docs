@@ -1180,7 +1180,7 @@ DELETE /api/v1/watchlist/{stockCode}
 
 ### 6.4 알림함
 
-Finch 가 사용자에게 할 일을 쌓아 두는 곳이다. 홈·포트폴리오·내 정보 헤더의 뱃지가 `unreadCount` 를 그린다. (이슈 #57)
+FINCH 가 사용자에게 할 일을 쌓아 두는 곳이다. 홈·포트폴리오·내 정보 헤더의 뱃지가 `unreadCount` 를 그린다. (이슈 #57)
 
 #### 목록
 
