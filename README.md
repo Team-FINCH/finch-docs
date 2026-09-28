@@ -1,130 +1,98 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/Team-FINCH/finch-frontend/master/public/brand/finch-logo.png" alt="FINCH" width="160" />
+
 # FINCH
 
-**내 계좌와 성향을 읽고 투자 판단을 돕는 AI 비서**다. 실제 시세로 국내 주식을 매매하고, 그 결과를 AI 가 사용자의 원장과 시장 데이터에 근거해 설명한다. 실제 금전 이동은 없고 가상 예수금으로 거래한다.
+**내 계좌를 읽고, 숫자로 설명하는 AI 투자 비서**
+
+실제 시세로 국내 주식을 모의 매매하고, AI 가 내 원장과 시장 데이터를 근거로 "무슨 일이 있었는지"를 설명합니다.
+
+[**서비스 바로가기 → finchapp.org**](https://finchapp.org)
+
+![React](https://img.shields.io/badge/React_19-20232A?logo=react&logoColor=61DAFB)
+![Spring Boot](https://img.shields.io/badge/Spring_Boot_4-6DB33F?logo=springboot&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL_+_pgvector-4169E1?logo=postgresql&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/k3s-FFC61C?logo=k3s&logoColor=black)
+
+</div>
+
+## 한눈에 보기
 
 | | |
 |---|---|
-| 서비스 | **https://finchapp.org** (설치형 PWA) |
-| API 문서 | https://swagger.finchapp.org (Basic 인증) |
-| 팀 | 15기 특화 프로젝트 FINCH |
+| **기간** | 2026.08 – 2026.09 (6주) |
+| **팀** | 5명 — Frontend 2 · Backend 1 · AI 1 · Infra 1 |
+| **규모** | 커밋 1,400+ · 자동화 테스트 1,300+ (AI 708 · Backend 654) |
+| **운영** | 실서비스 배포 (k3s, Cloudflare Tunnel, 설치형 PWA) |
 
-## 무엇이 다른가
+## 풀고 싶었던 문제
 
-**1. 원장이 단일 진실 공급원이다.** 잔고, 손익, 수익률은 저장된 값이 아니라 `ledger_entry` 에서 계산한 값이다. 클라이언트가 보낸 계산값을 신뢰하지 않는다.
+주식 앱은 **"얼마가 됐는지"** 는 보여 주지만 **"왜 그렇게 됐는지"** 는 알려 주지 않습니다.
+그렇다고 LLM 에게 그냥 물으면 **숫자를 지어내고, 투자를 권유합니다.** 금융 서비스에서는 둘 다 치명적입니다.
 
-**2. AI 가 원장을 쓰지 못한다.** 읽기 전용 내부 계약(`/internal/v1`)으로만 접근한다. AI 가 잔고를 바꿀 경로는 구조적으로 존재하지 않는다.
+## FINCH 의 답
 
-**3. AI 가 수치를 지어내지 못한다.** 모든 숫자는 엔진이 계산해 `{{자리표시자}}` 로 넘기고 서버가 치환한다. 출력단 가드레일 9종이 치환되지 않은 자리표시자, 직접 쓴 숫자, 근거 없는 인용을 잡아 막는다.
+**1. AI 는 숫자를 쓰지 않습니다.**
+수익률·비중·손익은 계산 엔진이 만들고, AI 는 `{{자리표시자}}` 로만 문장을 씁니다. 서버가 엔진 값으로 치환합니다.
+AI 가 직접 쓴 숫자는 자동 검사에서 폐기됩니다.
 
-**4. 되돌리는 기능을 넣지 않았다.** 계좌 초기화도 충전 취소도 없다. 실제 투자 서비스에 없는 편의를 넣으면 연습용 도구로 읽힌다.
+**2. 출력은 내보내기 전에 10가지 자동 검사를 거칩니다.**
+지어낸 숫자, 근거 없는 인용, 인과 단정, 매수·매도 권유를 잡아 재생성하거나 차단합니다. 틀린 답을 내느니 답하지 않습니다.
 
-## 기능
+**3. AI 는 돈을 움직일 수 없습니다.**
+원장은 백엔드만 쓰고, AI 는 읽기 전용 내부 API 로만 접근합니다. 잔고를 바꾸는 경로가 구조적으로 없습니다.
 
-**투자** — 카카오 로그인, 카카오페이 테스트 결제로 예수금 충전, 시장가 매수와 매도, 보유 종목과 평가손익, 매매 내역
+**4. 모든 설명에 근거가 붙습니다.**
+뉴스·공시를 매일 수집해 벡터 검색(RAG)으로 찾고, 답변마다 출처 각주를 답니다.
 
-**시세** — 한국투자증권 OpenAPI 실시간 수신, 일봉과 주봉과 월봉 차트, 관심 종목
+## 주요 기능
 
-**AI 6종** — 응답은 전부 근거를 함께 낸다
-
-| 기능 | 화면 |
+| 기능 | 설명 |
 |---|---|
-| 종목 분석 | 종목 상세 |
-| Ask My Portfolio (채팅) | 채팅 |
-| 포트폴리오 진단 | 포트폴리오 |
-| 수익률 원인 분석 | 홈, 포트폴리오 |
-| 주문 전 점검 | 주문 |
-| 데일리 브리핑 | 홈 |
+| 🤖 **AI 채팅** | "오늘 내 주식 왜 떨어졌어?" — 도구를 골라 포트폴리오·수익률 분해·뉴스를 조회하고 답합니다 |
+| 📰 **데일리 브리핑** | 매일 아침 내 보유 종목에 관련된 소식을 골라 요약합니다 |
+| 📊 **포트폴리오 진단** | 집중도·변동성 등 위험 지표를 계산하고 쉬운 말로 풀어 줍니다 |
+| 📈 **수익률 원인 분석** | 시장 대비 초과수익을 종목별 기여도로 나눠 보여 줍니다 |
+| 🔎 **종목 분석** | 공시·재무·뉴스를 근거로 종목을 요약합니다 |
+| 🛒 **모의 매매** | 실시간 시세(한국투자증권 OpenAPI)로 시장가 매수·매도, 카카오페이 테스트 결제로 충전 |
 
-## 범위 경계
-
-평가 전에 알아두면 좋은 것들이다.
-
-| | |
-|---|---|
-| **서비스 종목 30개** | 실시간 시세 세션 한도(41건) 때문에 종목을 30개로 골라 뒀다. **그 밖의 종목은 검색에 나오지 않는다** — 고장이 아니다. 목록은 `backend/src/main/resources/application.yaml` 의 `finch.universe.codes` |
-| **시장가 전용** | 지정가와 미체결 관리는 범위 밖이다 |
-| **거래 시간** | 평일 09:00~15:30, 16:00~20:00 (KRX 애프터마켓 포함). 그 밖에는 주문이 막힌다 |
-| **모의 결제** | 카카오페이 테스트 CID 다. 결제창과 승인 흐름은 진짜지만 실제 금전 이동이 없다 |
-| **수수료와 세금** | 적용하지 않는다 |
-
-## 구성
+## 아키텍처
 
 ```
- 사용자 브라우저 (PWA)
-      │  HTTPS
-      ▼
-  Cloudflare Tunnel ──► k3s Ingress (nginx)
-      │
-      ├─ frontend   React 19 + Vite 8 + TypeScript (nginx 정적 서빙)
-      │
-      └─ backend    Spring Boot 4.1 / Java 21
-             ├── PostgreSQL 17   원장, 계정, 종목
-             ├── Redis           멱등성 키, 캐시
-             ├── 외부 API        카카오, 카카오페이, 한국투자증권
-             │
-             └── AI 중계 ──► ai   FastAPI / Python 3.12
-                       ├── PostgreSQL + pgvector   문서, 임베딩, 시세
-                       └── 외부 API   GMS, DART, KRX, ECOS, 네이버
+  사용자 (PWA)
+      │ HTTPS
+  Cloudflare Tunnel ─► k3s Ingress
+      ├─ Frontend   React 19 · Vite · TypeScript
+      └─ Backend    Spring Boot 4 · Java 21 ── PostgreSQL · Redis
+             │                                  └ 카카오 · 카카오페이 · 한국투자증권
+             └─ AI 중계 ─► AI   FastAPI · Python 3.12 ── PostgreSQL + pgvector
+                                                  └ OpenAI · DART · KRX · ECOS · 네이버 뉴스
 ```
 
-**프론트는 AI 서버를 직접 호출하지 않는다.** 모든 AI 호출은 백엔드가 중계한다 — 인증 주체를 하나로 두고, 신뢰 헤더(`X-User-Id`) 위조 경로를 막기 위해서다.
+프론트는 AI 를 직접 부르지 않습니다. 인증 주체를 백엔드 하나로 두기 위해 모든 AI 호출은 백엔드가 중계합니다.
 
-**운영은 k3s 다.** Helm 차트로 앱(`finch`)과 관측 스택(`finch-observability`)을 별도 릴리스로 올린다. Jenkins 가 master 머지마다 변경 파트를 감지해 이미지를 빌드하고 `helm upgrade --install --atomic` 으로 배포한다. Docker Compose 구성은 롤백 경로로 남아 있다.
+## 저장소
 
-**관측** — Prometheus, Grafana, Loki, Alloy, node-exporter, kube-state-metrics, json-exporter
-
-## 디렉터리
-
-| | |
+| 저장소 | 내용 |
 |---|---|
-| `backend/` | Spring Boot. 원장, 인증, 시세 중계, AI 중계, 결제 |
-| `ai/` | FastAPI. 분석 생성, RAG 검색, 근거 적재, 가드레일 |
-| `frontend/` | React. 화면, 라우팅, 상태 관리, MSW 목 서버 |
-| `infra/` | Docker, Helm 차트, Jenkins, 관측 스택, 운영 스크립트 |
-| `docs/` | 명세와 계약 |
-| `prototype/` | 화면 프로토타입 |
-
-**파트 디렉터리 소유권은 ADR-0002 를 따른다.** 다른 파트의 디렉터리를 직접 수정하지 않는다.
-
-## 문서
-
-**어느 것을 먼저 읽어야 하는지**가 문서 수보다 중요하다.
-
-| 알고 싶은 것 | 읽을 것 |
-|---|---|
-| 무엇을 만들기로 했나 | `docs/spec/featureSpec.md` (기능 명세) |
-| 무엇이 어디까지 됐나 | `docs/spec/requirementsSpec.md` (요구사항별 구현 상태) |
-| 백엔드 API 계약 | `docs/api/apiSpec.md` — **이것이 정본이다** |
-| AI API 계약 | `ai/docs/api-spec.md` — **이것이 정본이다** |
-| 데이터 모델 | `docs/erd/erd.md` |
-| 화면 설계 | `docs/design/screenDesign.md`, `frontend/docs/ia.md`, `frontend/docs/design.md` |
-| 인프라와 배포 | `infra/README.md`, `infra/k8s/README.md` |
-| 커밋과 MR 규칙 | `docs/convention/gitConvention.md`, `docs/convention/mrConvention.md` |
-
-> **`docs/api/aiApiSpec.md` 는 2026-08-20 협의용 초안이다.** 이름이 비슷해 헷갈리기 쉬운데, 살아 있는 AI 계약은 `ai/docs/api-spec.md` 다.
-
-## 로컬에서 돌리기
-
-각 파트가 독립적으로 뜬다. 자세한 것은 파트별 README 를 본다.
-
-```bash
-# frontend — MSW 목 서버가 붙어 백엔드 없이도 화면이 전부 돈다
-cd frontend && npm ci && npm run dev
-
-# backend — Testcontainers 가 PostgreSQL 과 Redis 를 자동으로 띄운다
-cd backend && ./gradlew bootTestRun
-
-# ai — .env 작성이 선행이다 (ai/README.md 참고)
-cd ai && pip install -r requirements.txt && uvicorn app.api.main:app --reload
-```
-
-전체 스택을 한 번에 띄우려면 `infra/README.md` 의 '서버 첫 구축 순서' 를 따른다.
+| [finch-docs](https://github.com/Team-FINCH/finch-docs) | 프로젝트 소개, 기획·명세, 설계 문서 |
+| [finch-frontend](https://github.com/Team-FINCH/finch-frontend) | React 19 PWA |
+| [finch-backend](https://github.com/Team-FINCH/finch-backend) | Spring Boot 4 · 원장 · 주문 · 결제 |
+| [finch-ai](https://github.com/Team-FINCH/finch-ai) | FastAPI · LLM 에이전트 · RAG · 가드레일 |
+| [finch-infra](https://github.com/Team-FINCH/finch-infra) | k3s · Helm · CI/CD · 관측 |
 
 ## 팀
 
-| 파트 | 담당 범위 |
-|---|---|
-| Backend | 원장, 인증, 시세 중계, AI 중계, 외부 결제 연동 |
-| AI | 분석 생성, RAG 검색, 근거 데이터 적재, 가드레일 |
-| Frontend | 화면, 라우팅, 상태 관리, 목 서버 |
-| Infra | 서버, 컨테이너, CI/CD, 쿠버네티스, 관측, 배치 스케줄 |
+| 이름 | GitHub | 역할 |
+|---|---|---|
+| 유승주 | [@TrossYou](https://github.com/TrossYou) | Frontend |
+| 안서진 | [@xxj15](https://github.com/xxj15) | Frontend |
+| 서동혁 | [@weeast1521](https://github.com/weeast1521) | Backend |
+| 김세민 | [@tpals0409](https://github.com/tpals0409) | AI |
+| 장준환 | [@prgmd](https://github.com/prgmd) | Infra |
+
+---
+
+<sub>상세 기획·범위·문서 지도는 [docs/PROJECT.md](docs/PROJECT.md) 에 있습니다.</sub>
