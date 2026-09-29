@@ -60,15 +60,19 @@ AI 가 직접 쓴 숫자는 자동 검사에서 폐기됩니다.
 
 ## 아키텍처
 
-```
-  사용자 (PWA)
-      │ HTTPS
-  Cloudflare Tunnel ─► k3s Ingress
-      ├─ Frontend   React 19 · Vite · TypeScript
-      └─ Backend    Spring Boot 4 · Java 21 ── PostgreSQL · Redis
-             │                                  └ 카카오 · 카카오페이 · 한국투자증권
-             └─ AI 중계 ─► AI   FastAPI · Python 3.12 ── PostgreSQL + pgvector
-                                                  └ OpenAI · DART · KRX · ECOS · 네이버 뉴스
+```mermaid
+flowchart LR
+    U(["사용자<br/>설치형 PWA"]) -->|HTTPS| CF["Cloudflare Tunnel"]
+    CF --> ING["k3s Ingress<br/>nginx"]
+    ING --> FE["Frontend<br/>React 19"]
+    ING -->|/api/v1| BE["Backend<br/>Spring Boot 4"]
+    BE --> PG[("PostgreSQL<br/>원장 · 계정")]
+    BE --> RD[("Redis<br/>시세 · 멱등 키")]
+    BE -->|AI 중계| AI["AI<br/>FastAPI"]
+    AI -->|"/internal/v1 (읽기 전용)"| BE
+    AI --> VEC[("PostgreSQL + pgvector<br/>문서 · 임베딩 · 시세")]
+    BE -.-> EXT1["카카오 로그인 · 카카오페이<br/>한국투자증권"]
+    AI -.-> EXT2["OpenAI · DART · KRX<br/>ECOS · 네이버 뉴스"]
 ```
 
 프론트는 AI 를 직접 부르지 않습니다. 인증 주체를 백엔드 하나로 두기 위해 모든 AI 호출은 백엔드가 중계합니다.
